@@ -1,0 +1,29 @@
+_target_: src.data.bt_mri_proxy_datamodule.BTMRIProxyDataModule
+
+data_dir: ${paths.data_dir}
+raw_subdir: raw/bt_mri
+split_subpath: splits/dataset_split.csv
+
+# Step 6 filter, applied on the fly. The selection studies override this per candidate;
+# only the winning recipe is later materialised by src/prepare_dataset.py.
+preprocess: null
+
+# Balanced subset sizes. Matches the reference notebook's proxy scale.
+per_class_train: 200
+per_class_val: 75
+
+# Reduced from the pipeline's 224 - these sweeps rank candidates, they do not produce
+# reportable model performance.
+image_size: 128
+normalize: imagenet
+
+# Both are Step 8 strategies, ablated by the Step 8 study rather than fixed here.
+augment: false
+use_weighted_sampler: false
+
+batch_size: 32
+num_workers: 0
+pin_memory: false
+
+# Fixed across candidates so every configuration sees identical data.
+seed: 42

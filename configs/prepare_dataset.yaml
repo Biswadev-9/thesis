@@ -1,0 +1,39 @@
+# @package _global_
+
+# Materialises a Step 6 preprocessing recipe into a cached image mirror under
+# data/processed/<recipe>/, mirroring the raw tree's relative layout.
+#
+#   python src/prepare_dataset.py recipe=diffusion_i10_k15
+#   python src/prepare_dataset.py -m recipe=clahe,wiener,gamma,log
+#
+# Caching is what makes Step 6's chosen preprocessing usable in real training: applying
+# diffusion on the fly would dominate every epoch. See docs/DEVIATIONS.md (F4).
+#
+# 'raw' and 'conventional' need no mirror - they apply no image-space filter and differ
+# only in the Step 5 intensity treatment (data.normalize).
+
+defaults:
+  - _self_
+  - paths: default
+  - extras: default
+  - hydra: default
+  - optional local: default
+
+task_name: "prepare_dataset"
+
+tags: ["data"]
+
+# Recipe to materialise: diffusion_i{iters}_k{kappa} | wiener | clahe | gamma | log
+recipe: diffusion_i10_k15
+
+# Raw tree and split table, relative to paths.data_dir. Must match configs/data/bt_mri.yaml.
+raw_subdir: raw/bt_mri
+split_subpath: splits/dataset_split.csv
+
+# Re-filter images whose output already exists.
+overwrite: false
+
+# Process at most this many images (smoke tests); null processes all.
+limit: null
+
+seed: 42

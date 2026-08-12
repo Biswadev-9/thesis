@@ -1,0 +1,32 @@
+# Step 6: select the preprocessing module on validation performance AND boundary
+# preservation - never on visual appearance.
+#
+#   python src/analyze.py analysis=step06_preprocessing
+#
+# Writes step06_preprocessing_comparison.csv, step06_preprocessing.png and a summary
+# naming the winner plus the prepare_dataset command that materialises it.
+
+_target_: src.analysis.preprocessing_study.PreprocessingStudy
+
+name: step06_preprocessing
+
+# "Start with 5, 10, 15, and 20 iterations" (Step 6); kappa tuned on validation.
+diffusion_iterations: [5, 10, 15, 20]
+diffusion_kappas: [15.0, 30.0]
+
+# The comparators the specification names. "conventional" is the no-preprocessing
+# reference (Step 5 pipeline only).
+comparators: ["conventional", "wiener", "gamma", "clahe", "log"]
+
+# Proxy protocol - ranks candidates, does not produce reportable performance.
+epochs: 5
+per_class_train: 200
+per_class_val: 75
+image_size: 128
+lr: 1e-3
+
+# Images used for the Sobel edge-preservation score.
+edge_sample_size: 20
+
+seed: ${seed}
+accelerator: auto

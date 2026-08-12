@@ -1,0 +1,32 @@
+# Step 8: compare class weighting, focal loss, balanced sampler and augmentation.
+#
+#   python src/analyze.py analysis=step08_imbalance
+#
+# Judged on macro-F1, balanced accuracy and class-wise recall - "Accuracy alone is not
+# sufficient". A combined arm is selected only if it beats every component it is built
+# from, enforcing "use more than one strategy only when ablation confirms benefit".
+
+_target_: src.analysis.imbalance_study.ImbalanceStudy
+
+name: step08_imbalance
+
+# null uses every strategy in src/analysis/imbalance_study.py::STRATEGIES.
+strategies: null
+
+# Preprocessing held fixed so imbalance handling is measured independently of Step 6.
+recipe: conventional
+
+# Proxy protocol, matching the Step 6 study so the two are comparable.
+epochs: 5
+per_class_train: 200
+per_class_val: 75
+image_size: 128
+lr: 1e-3
+
+focal_gamma: 2.0
+
+# Also run the reference notebook's focal formulation, to quantify what F6 changed.
+compare_legacy_focal: true
+
+seed: ${seed}
+accelerator: auto

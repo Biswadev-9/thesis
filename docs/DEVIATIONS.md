@@ -146,6 +146,110 @@ backbone anyway.
 
 ---
 
+## Phase 2 — preprocessing and imbalance (Steps 6, 8)
+
+### F4 — Diffusion preprocessing is now usable in real training · `done` (mechanism)
+
+**Specification** Step 6 selects an edge-preserving preprocessing module, and Steps 18
+and 21 depend on it having actually been applied.
+
+**Notebook** Selected diffusion (iterations 10, kappa 15) in Step 6 and then never
+applied it. Steps 7 onward used plain resize and normalise, so ablation rows A2–A6, all
+of which read "Diffusion + …", contained no diffusion at all.
+
+**Now** Preprocessing is a cached data stage. `src/prepare_dataset.py` materialises a
+recipe into `data/processed/<recipe>/`, mirroring the raw tree's relative layout so the
+single split table addresses raw images and every recipe alike. `data.recipe=<name>`
+then trains on it.
+
+Caching is what makes the fix feasible rather than merely tidy: diffusion at 10
+iterations costs order 0.1 s per image, which applied on the fly would dominate every
+epoch of every run — the practical reason the notebook's selection was never adopted.
+
+Recipe names encode their parameters (`diffusion_i10_k15`), so two configurations cannot
+share a cache directory. `raw` and `conventional` are recognised as identity recipes and
+deliberately materialise nothing: they differ only in the Step 5 intensity treatment, so
+copying the dataset twice would waste disk and invite drift.
+
+**Still to come**: the A0–A6 runs that consume these mirrors land in Phase 8.
+
+### F4a — Diffusion filters luminance once, not RGB three times · `done`
+
+The notebook replicated grayscale to three channels and then ran diffusion
+independently on each identical channel — triple the cost for an identical result.
+Filtering happens once on the luminance channel, then replicates.
+
+### F4b — One diffusion implementation, and the duplicate was harmless · `done`
+
+The notebook defined `anisotropic_diffusion` twice (cells 29 and 31) with the north and
+south `np.roll` directions swapped, which looked like a genuine inconsistency.
+
+**It was not.** All four directional terms are summed and the coefficient depends only on
+`|delta|`, so swapping the two labels yields an identical result. The discrepancy was
+cosmetic. `tests/test_preprocessing.py::test_north_south_roll_direction_is_cosmetic`
+demonstrates this against the reference formulation, so the claim is verified rather
+than asserted. One implementation now replaces both.
+
+**Correction**: `docs/IMPLEMENTATION_PLAN.md` §2 (F4) implies this discrepancy mattered.
+It did not — no result was ever affected by it.
+
+**Known minor artefact, retained**: `np.roll` wraps at the image border rather than
+replicating the edge. On MRI slices the border is background, so the effect is
+negligible; kept for fidelity to the reference and recorded here rather than silently
+changed.
+
+### F5 — Step 6 selection is explicitly a proxy, with its limits recorded · `done`
+
+**Specification** Step 6: *"Do not choose preprocessing based only on visual appearance.
+Select it using validation performance and boundary/texture preservation checks."*
+
+`src/analysis/preprocessing_study.py` reports both criteria: validation macro-F1 from a
+trained proxy model decides the ranking, and a Sobel edge-preservation score is reported
+alongside so a candidate that wins by blurring detail away is visible as such.
+
+The proxy protocol — `SmallCNN`, 128 px, 200 images per class — matches the reference so
+the sweep stays affordable across eleven-plus candidates. Unlike the reference, the
+summary states this limitation explicitly and names the confirmation step: re-run the top
+candidates with the real backbone on the full validation split before committing. Those
+confirmation runs are ordinary training runs (`data.recipe=<name>`) and are scheduled for
+Phase 3.
+
+### F6a — Step 8 quantifies what the focal-loss correction changed · `done`
+
+The Step 8 ablation runs the corrected focal loss and, alongside it, the notebook's
+formulation as `focal_loss_legacy`. The summary reports the macro-F1 difference between
+them, so the effect of F6 on this dataset is measured rather than assumed.
+
+### D6 — Combining imbalance strategies requires two criteria, not one · `done`
+
+**Specification** Step 8: *"Use more than one strategy only when ablation confirms
+benefit."*
+
+A first implementation required a combined arm to beat its components on macro-F1. That
+guard was vacuous: an arm that ranks first beats everything on macro-F1 by definition, so
+the branch was unreachable.
+
+The rule now requires a combined arm to beat every component on **both** macro-F1 and
+worst-class recall. This is what catches the failure the notebook actually hit — its
+combined arm looked acceptable in aggregate while collapsing Meningioma recall to 0.373 —
+and it is why the specification names class-wise recall as a judging criterion. Both
+branches are unit-tested.
+
+### D7 — Preprocessing sweeps filter in memory, not on disk · `done`
+
+The Step 6 sweep applies candidates on the fly to a balanced subset rather than
+materialising thirteen full mirrors. A selection sweep touches each candidate once, so
+caching them all would cost far more disk and time than it saves. Only the winning recipe
+is materialised, by `src/prepare_dataset.py`.
+
+### D8 — Selection studies never touch the internal test split · `done`
+
+`BTMRIProxyDataModule.test_dataloader` returns the validation loader. Step 16 requires
+the internal test set to stay unseen until the final model is evaluated once, and a
+selection study has no legitimate reason to read it. Unit-tested.
+
+---
+
 ## Environment and template repairs
 
 These are not methodological, but they changed files and are recorded for traceability.
@@ -174,16 +278,21 @@ Two changes:
 removed and which is absent on Python 3.12+. On the pristine template the entire test
 suite failed to collect. Replaced with `importlib.metadata`.
 
-### E3 — `tests/test_train.py::test_train_ddp_sim` still fails · `open`
+### E3 — DDP worker processes could not load checkpoints · `done`
 
-DDP simulated across two spawned CPU processes on Windows. The spawned child cannot
-unpickle the checkpoint's `omegaconf.ListConfig` despite the parent's safe-globals
-registration.
+Symptom: `tests/test_train.py::test_train_ddp_sim` failed in the spawned child with
+`Unsupported global: omegaconf.listconfig.ListConfig`, despite the parent having
+registered it.
 
-**Pre-existing**: on the unmodified template this test could not even be collected (E2).
-It exercises the MNIST example, which Phase 8 removes, on the platform path the upstream
-template itself documents as unreliable. Not investigated further; revisit only if DDP
-training becomes necessary.
+Cause: `torch.serialization`'s allow-list is per-process. Lightning's DDP launcher spawns
+a fresh interpreter that unpickles the model class directly. `MNISTLitModule` imports
+nothing from `src.utils`, so the child reached `torch.load` with an empty allow-list.
+`MRIClassificationModule` does import `src.utils`, which is why our own models were
+unaffected and the defect only surfaced through the template example.
+
+Fix: the registration moved to `src/__init__.py`, so it runs however the package is
+entered. This makes DDP viable for the project's own models rather than only fixing the
+example. Suite now green.
 
 ### E4 — Dependencies added · `done`
 
