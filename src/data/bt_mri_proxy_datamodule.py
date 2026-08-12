@@ -27,7 +27,7 @@ from src.data.components.sampling import (
     make_weighted_sampler,
     stratified_subset_indices,
 )
-from src.data.components.split_builder import CLASS_MAP
+from src.data.components.split_builder import CLASS_MAP, locate_dataset_root
 from src.data.components.transforms import build_transform
 from src.utils import RankedLogger
 
@@ -93,9 +93,10 @@ class BTMRIProxyDataModule(LightningDataModule):
         """:return: Directory images are loaded from.
 
         Always the raw tree: proxy sweeps apply preprocessing on the fly rather than
-        reading a materialised mirror.
+        reading a materialised mirror. Resolved the same way as the main datamodule so
+        the shared split table's relative paths line up.
         """
-        return Path(self.hparams.data_dir) / self.hparams.raw_subdir
+        return locate_dataset_root(Path(self.hparams.data_dir) / self.hparams.raw_subdir)
 
     @property
     def num_classes(self) -> int:

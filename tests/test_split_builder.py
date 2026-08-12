@@ -173,3 +173,79 @@ def test_pool_rejects_a_directory_with_no_images(tmp_path):
     (tmp_path / "empty").mkdir()
     with pytest.raises(FileNotFoundError):
         pool_image_records(tmp_path / "empty")
+
+
+# ------------------------------------------------------- dataset root resolution
+
+
+def _make_class_folders(parent: Path) -> None:
+    """Create the four class folders, each holding one image.
+
+    :param parent: Directory to populate.
+    """
+    from PIL import Image
+
+    for class_name in CLASS_MAP:
+        folder = parent / class_name
+        folder.mkdir(parents=True, exist_ok=True)
+        Image.new("L", (8, 8)).save(folder / "img.png")
+
+
+def test_resolver_returns_the_root_when_split_folders_are_already_there(tmp_path):
+    """A flat layout needs no descent."""
+    from src.data.components.split_builder import locate_dataset_root
+
+    for split in ("Training", "Testing"):
+        _make_class_folders(tmp_path / split)
+
+    assert locate_dataset_root(tmp_path) == tmp_path
+
+
+def test_resolver_returns_the_root_when_class_folders_are_directly_there(tmp_path):
+    """Some mirrors ship class folders with no Training/Testing division."""
+    from src.data.components.split_builder import locate_dataset_root
+
+    _make_class_folders(tmp_path)
+    assert locate_dataset_root(tmp_path) == tmp_path
+
+
+def test_resolver_descends_into_the_doubly_nested_archive(tmp_path):
+    """The published archive unpacks to <name>/<name>/Training, two levels down."""
+    from src.data.components.split_builder import locate_dataset_root
+
+    nested = tmp_path / "BT-MRI Dataset" / "BT-MRI Dataset"
+    for split in ("Training", "Testing"):
+        _make_class_folders(nested / split)
+
+    assert locate_dataset_root(tmp_path) == nested
+
+
+def test_resolver_never_selects_a_degraded_copy_of_the_dataset(tmp_path):
+    """The real archive ships a 'Challenging Datasets' tree with the SAME class folders.
+
+    Selecting it would train the study on deliberately blurred and noise-corrupted
+    images while every log still said 'Glioma, Meningioma, Pituitary, No-tumor'. Only a
+    directory containing the Training/Testing split folders may be chosen automatically.
+    """
+    from src.data.components.split_builder import locate_dataset_root
+
+    primary = tmp_path / "BT-MRI Dataset" / "BT-MRI Dataset"
+    for split in ("Training", "Testing"):
+        _make_class_folders(primary / split)
+
+    # Sorts before "BT-MRI..." so a naive search would reach it first.
+    for degraded in ("Blurred Dataset", "Noisy Dataset"):
+        _make_class_folders(tmp_path / "AAA Challenging" / "AAA Challenging" / degraded)
+
+    assert locate_dataset_root(tmp_path) == primary
+
+
+def test_pooling_resolves_the_nested_root_automatically(tmp_path):
+    """The documented quickstart must work without quoting a nested path."""
+    nested = tmp_path / "BT-MRI Dataset" / "BT-MRI Dataset"
+    make_synthetic_dataset(nested, per_class_train=3, per_class_test=1, duplicates_per_class=0)
+
+    pooled = pool_image_records(tmp_path)
+    assert len(pooled) == 4 * 4
+    # Paths are relative to the resolved root, so a recipe mirror lines up with them.
+    assert all(p.startswith(("Training/", "Testing/")) for p in pooled["rel_path"])

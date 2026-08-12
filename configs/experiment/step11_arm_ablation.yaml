@@ -1,0 +1,37 @@
+# @package _global_
+#
+# Step 11: the eight-arm multiscale ablation.
+#
+#   "Ablation is essential: compare fixed 3x3 convolution, fixed 5x5 convolution, fixed
+#    dilated convolution, and the proposed adaptive multiscale module."
+#
+# All eight arms across three seeds - 24 runs:
+#
+#   python src/train.py -m experiment=step11_arm_ablation seed=42,123,7 trainer=gpu \
+#       model.net.arm=arm1_fixed_3x3,arm2_fixed_5x5,arm3_fixed_dilated,arm4_concat_nogate,arm5_global_gate,arm6_spatial_gate,arm7_spatial_gate_quantum,arm8_global_gate_quantum
+#
+# The comparison that matters is arm6 (per-pixel gating) against arm5 (per-image gating):
+# both are adaptive, so their difference isolates *spatial* adaptivity. Arms 1-3 establish
+# what a single fixed receptive field achieves, and arm4 what multiscale achieves without
+# any gating at all.
+#
+# Arms 7 and 8 attach the fixed quantum circuit. They are far slower than the rest - run
+# them as a separate sweep if that is inconvenient.
+#
+# Report the learned scale weights afterwards, as Step 11 requires:
+#   python src/analyze.py analysis=step11_gate_morphology analysis.ckpt_path=<arm6 ckpt>
+
+defaults:
+  - override /data: bt_mri
+  - override /model: branch_multiscale
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step11", "ablation", "multiscale"]
+
+data:
+  recipe: null
+  normalize: imagenet
+  augment: true
+  use_weighted_sampler: true

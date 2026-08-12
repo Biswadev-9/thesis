@@ -34,7 +34,7 @@ matplotlib      # audit plots, confusion matrices, robustness curves
 seaborn         # heatmaps
 
 # --------- quantum (steps 11-12) --------- #
-# pennylane     # NOTE: enable in Phase 0 only after verifying Python 3.13 support
+pennylane>=0.40   # verified working on Python 3.13 / torch 2.13 (TorchLayer fwd+bwd)
 
 # --------- analysis (steps 19-23) --------- #
 # shap          # step 19 fused-vector attribution

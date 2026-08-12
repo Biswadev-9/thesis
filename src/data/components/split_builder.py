@@ -27,6 +27,10 @@ import pandas as pd
 from PIL import Image
 from sklearn.model_selection import train_test_split
 
+from src.utils.pylogger import RankedLogger
+
+log = RankedLogger(__name__, rank_zero_only=True)
+
 # Step 1: the four-class task. Label indices are fixed by the specification and must
 # stay identical across training, validation, internal testing and external validation.
 CLASS_MAP: Dict[str, int] = {
@@ -97,6 +101,73 @@ def md5_file(path: Path, chunk_size: int = 1 << 20) -> str:
     return digest.hexdigest()
 
 
+#: Memoises resolved dataset roots. ``image_root``/``raw_dir`` are properties, so without
+#: this a caller that touches one inside a loop - the Step 6 study reads it once per
+#: sampled image - triggers a fresh directory walk and a fresh log line every time. The
+#: repeated output looks exactly like a hung loop.
+_DATASET_ROOT_CACHE: Dict[Tuple[str, Tuple[str, ...]], Path] = {}
+
+
+def locate_dataset_root(
+    raw_dir: Path,
+    source_dirs: Sequence[str] = ("Training", "Testing"),
+    max_depth: int = 3,
+) -> Path:
+    """Find the directory that actually holds the dataset, descending if archived deep.
+
+    The published archive unpacks to a doubly-nested folder
+    (``BT-MRI Dataset/BT-MRI Dataset/Training/...``), so the download location is rarely
+    the dataset root. Descending automatically keeps the documented commands working
+    without every user having to quote a path containing spaces.
+
+    Disambiguation matters here. The same archive also ships
+    ``Challenging Datasets/.../Blurred Dataset/``, which contains the *same four class
+    folders* as the real training data. Matching on class folders alone could therefore
+    silently select a degraded copy of the dataset and quietly invalidate the whole
+    study. Only a directory containing the ``source_dirs`` split folders is accepted as a
+    nested root; anything less specific requires an explicit ``raw_subdir``.
+
+    :param raw_dir: Directory the dataset was downloaded into.
+    :param source_dirs: Vendor split folder names that identify the dataset root.
+    :param max_depth: How many levels to descend before giving up.
+    :return: The dataset root, or ``raw_dir`` unchanged if no nested root is found.
+    """
+    raw_dir = Path(raw_dir)
+    cache_key = (str(raw_dir), tuple(source_dirs))
+    if cache_key in _DATASET_ROOT_CACHE:
+        return _DATASET_ROOT_CACHE[cache_key]
+
+    def subdirectories(path: Path) -> List[Path]:
+        try:
+            return sorted(child for child in path.iterdir() if child.is_dir())
+        except OSError:
+            return []
+
+    def remember(resolved: Path, descended: bool = False) -> Path:
+        _DATASET_ROOT_CACHE[cache_key] = resolved
+        if descended:
+            log.info(f"Located dataset root by descending: {resolved}")
+        return resolved
+
+    # Already at the root: either the split folders or the class folders are right here.
+    if any((raw_dir / name).is_dir() for name in source_dirs):
+        return remember(raw_dir)
+    if any(normalize_class_folder(child.name) for child in subdirectories(raw_dir)):
+        return remember(raw_dir)
+
+    frontier = [raw_dir]
+    for _ in range(max_depth):
+        next_frontier: List[Path] = []
+        for parent in frontier:
+            for child in subdirectories(parent):
+                if any((child / name).is_dir() for name in source_dirs):
+                    return remember(child, descended=True)
+                next_frontier.append(child)
+        frontier = next_frontier
+
+    return remember(raw_dir)
+
+
 def pool_image_records(
     raw_dir: Path,
     source_dirs: Sequence[str] = ("Training", "Testing"),
@@ -117,11 +188,13 @@ def pool_image_records(
     if not raw_dir.is_dir():
         raise FileNotFoundError(f"Raw dataset directory not found: {raw_dir}")
 
+    dataset_root = locate_dataset_root(raw_dir, source_dirs=source_dirs)
+
     search_roots: List[Tuple[str, Path]] = [
-        (name, raw_dir / name) for name in source_dirs if (raw_dir / name).is_dir()
+        (name, dataset_root / name) for name in source_dirs if (dataset_root / name).is_dir()
     ]
     if not search_roots:
-        search_roots = [("all", raw_dir)]
+        search_roots = [("all", dataset_root)]
 
     records: List[Dict[str, object]] = []
     for source_split, root in search_roots:
@@ -134,7 +207,9 @@ def pool_image_records(
                     continue
                 records.append(
                     {
-                        "rel_path": image_path.relative_to(raw_dir).as_posix(),
+                        # Relative to the resolved dataset root, so a recipe mirror under
+                        # data/processed/<recipe>/ addresses the same paths.
+                        "rel_path": image_path.relative_to(dataset_root).as_posix(),
                         "class_name": class_name,
                         "label": CLASS_MAP[class_name],
                         "source_split": source_split,
@@ -346,9 +421,10 @@ def build_split(
     :return: The split table and a provenance report.
     """
     raw_dir, out_csv = Path(raw_dir), Path(out_csv)
+    dataset_root = locate_dataset_root(raw_dir, source_dirs=source_dirs)
 
     pooled = pool_image_records(raw_dir, source_dirs=source_dirs)
-    hashed = add_content_hashes(pooled, raw_dir)
+    hashed = add_content_hashes(pooled, dataset_root)
 
     if deduplicate_first:
         unique, dedup_report = deduplicate(hashed)
@@ -363,6 +439,8 @@ def build_split(
 
     report: Dict[str, object] = {
         "raw_dir": str(raw_dir),
+        # Paths in the split table are relative to this, not to raw_dir.
+        "dataset_root": str(dataset_root),
         "split_csv": str(out_csv),
         "seed": seed,
         "val_frac": val_frac,

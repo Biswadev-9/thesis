@@ -36,7 +36,12 @@ class WeightAwareLoss(nn.Module):
     def __init__(self, use_class_weights: bool = False) -> None:
         super().__init__()
         self.use_class_weights = use_class_weights
-        self.register_buffer("class_weights", None)
+        # Non-persistent: a buffer so `.to(device)` moves it with the module, but kept out
+        # of the checkpoint because class weights are *derived* from the training split
+        # rather than learned. Persisting them would also make checkpoints unloadable into
+        # a freshly built module, whose buffer is still None and so has no matching key.
+        # They are re-derived from the datamodule in `MRIClassificationModule.setup`.
+        self.register_buffer("class_weights", None, persistent=False)
 
     def set_class_weights(self, weights: Optional[torch.Tensor]) -> None:
         """Install class weights derived from the training split.

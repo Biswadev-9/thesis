@@ -1,0 +1,25 @@
+# @package _global_
+#
+# Step 10: train the classical feature extraction branch.
+#
+#   python src/train.py -m experiment=step10_classical seed=42,123,7 trainer=gpu
+#
+# Then export its embeddings for the separability analysis Step 10 asks for:
+#
+#   python src/analyze.py analysis=step10_embeddings \
+#       analysis.ckpt_path=logs/train/runs/<timestamp>/checkpoints/epoch_XXX.ckpt
+
+defaults:
+  - override /data: bt_mri
+  - override /model: branch_classical
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step10", "branch", "classical"]
+
+data:
+  recipe: null
+  normalize: imagenet
+  augment: true
+  use_weighted_sampler: true

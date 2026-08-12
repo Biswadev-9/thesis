@@ -1,0 +1,45 @@
+# @package _global_
+
+# Step 9: build strong baseline models before the proposed architecture.
+#
+#   "Without strong baselines, the study cannot support claims about improvement or
+#    quantum advantage."
+#
+# Run all seven baselines across the three protocol seeds as one sweep:
+#
+#   python src/train.py -m experiment=step09_baselines \
+#       model=baseline_simple_cnn,baseline_resnet50,baseline_efficientnet_b0,baseline_vit,baseline_swin,baseline_fixed_qcnn,baseline_fixed_multiscale \
+#       seed=42,123,7 trainer=gpu
+#
+# or with glob:
+#
+#   python src/train.py -m experiment=step09_baselines model='glob(baseline_*)' seed=42,123,7 trainer=gpu
+#
+# That is 21 runs. Step 15 requires at least three seeds for "the final model and major
+# baselines"; the reference trained its baselines once, with a shorter patience, before
+# its protocol was fixed - so they were never strictly comparable to the model they were
+# meant to benchmark. See docs/DEVIATIONS.md (F8).
+#
+# Baseline 5 (fixed QCNN) runs on a CPU quantum simulator and will dominate the sweep's
+# wall-clock time. Run it separately if that is inconvenient.
+
+defaults:
+  - override /data: bt_mri
+  - override /model: baseline_efficientnet_b0
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step09", "baseline"]
+
+# Preprocessing is held at the Step 5 conventional pipeline for the baseline comparison,
+# so architectures are compared on identical inputs. The diffusion recipe enters the
+# study through the Step 21 ablation rows, not here.
+data:
+  recipe: null
+  normalize: imagenet
+  augment: true
+  use_weighted_sampler: true
+
+# Everything else - optimizer, scheduler, batch size, epochs, patience, selection metric -
+# comes from configs/protocol/fixed.yaml and must not be overridden per model.

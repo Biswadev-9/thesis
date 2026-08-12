@@ -17,6 +17,7 @@ against ``p_t ** w_t`` instead of ``p_t`` whenever class weighting was active, w
 precisely this arm's configuration. See docs/DEVIATIONS.md (F6).
 """
 
+import time
 from typing import Any, Dict, List, Optional
 
 import matplotlib
@@ -132,6 +133,7 @@ class ImbalanceStudy(Analysis):
 
         log.info(f"Step 8: evaluating {len(arms)} imbalance strategies")
         rows: List[Dict[str, Any]] = []
+        started = time.perf_counter()
 
         for position, arm in enumerate(arms, start=1):
             config = (
@@ -139,7 +141,7 @@ class ImbalanceStudy(Analysis):
                 if arm == "focal_loss_legacy"
                 else STRATEGIES[arm]
             )
-            log.info(f"[{position}/{len(arms)}] {arm}")
+            log.info(f"[{position}/{len(arms)}] {arm}{self._eta(started, position, len(arms))}")
 
             metrics = run_proxy_trial(
                 datamodule=self._build_datamodule(datamodule, config),
@@ -156,6 +158,8 @@ class ImbalanceStudy(Analysis):
                 f"balanced acc {metrics['balanced_accuracy']:.4f} | "
                 f"worst-class recall {metrics['min_class_recall']:.4f}"
             )
+            # Rewrite after every arm so an interrupt keeps the completed ones.
+            self.save_table(pd.DataFrame(rows), "step08_imbalance_comparison.csv", quiet=True)
 
         results = pd.DataFrame(rows).sort_values("macro_f1", ascending=False).reset_index(drop=True)
         self.save_table(results, "step08_imbalance_comparison.csv")
@@ -206,6 +210,27 @@ class ImbalanceStudy(Analysis):
         return summary
 
     # ---------------------------------------------------------------- internals
+
+    @staticmethod
+    def _eta(started: float, position: int, total: int) -> str:
+        """Format a remaining-time estimate for the progress log.
+
+        A sweep of this length on CPU looks stalled without one; the estimate is what tells
+        a reader the run is progressing rather than hung.
+
+        :param started: ``time.perf_counter()`` at the start of the sweep.
+        :param position: 1-based index of the candidate about to run.
+        :param total: Total candidates.
+        :return: A short suffix such as ``"  (~6m remaining)"``, empty for the first.
+        """
+        if position <= 1:
+            return ""
+        per_item = (time.perf_counter() - started) / (position - 1)
+        remaining = per_item * (total - position + 1)
+        if remaining < 90:
+            return f"  (~{remaining:.0f}s remaining)"
+        return f"  (~{remaining / 60:.0f}m remaining)"
+
 
     def _build_datamodule(self, source: Any, config: Dict[str, Any]) -> BTMRIProxyDataModule:
         """Build a proxy datamodule configured for one arm.

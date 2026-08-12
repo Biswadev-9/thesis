@@ -14,7 +14,7 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # ------------------------------------------------------------------------------------ #
 
 from src.data.components.preprocessing import build_recipe, is_identity_recipe
-from src.data.components.split_builder import load_split
+from src.data.components.split_builder import load_split, locate_dataset_root
 from src.utils import RankedLogger, extras, task_wrapper
 
 log = RankedLogger(__name__, rank_zero_only=True)
@@ -107,7 +107,8 @@ def prepare(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     recipe = cfg.recipe
 
     data_dir = Path(cfg.paths.data_dir)
-    raw_dir = data_dir / cfg.raw_subdir
+    # Same resolution as the datamodules, so mirrored paths match the split table.
+    raw_dir = locate_dataset_root(data_dir / cfg.raw_subdir)
     split_csv = data_dir / cfg.split_subpath
 
     if is_identity_recipe(recipe):

@@ -1,0 +1,39 @@
+# Step 11: adaptive multiscale kernel branch, and its ablation arms.
+#
+# Sweep all eight arms with:
+#   python src/train.py -m experiment=step11_arm_ablation \
+#       model.net.arm=arm1_fixed_3x3,arm2_fixed_5x5,arm3_fixed_dilated,arm4_concat_nogate,arm5_global_gate,arm6_spatial_gate,arm7_spatial_gate_quantum,arm8_global_gate_quantum
+#
+# arm6 is the proposed module (per-pixel gating); arm5 is its control (per-image gating).
+# The difference between them is what isolates *spatial* adaptivity.
+#
+# Follows the reference notebook rather than the specification's wording - paths are
+# 3x3 / 5x5 / dilated-3 rather than 3x3 / 5x5 / 7x7. See docs/DEVIATIONS.md.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.mri_classification_module.MRIClassificationModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  # from_arm keeps the whole ablation addressable through one sweepable key.
+  _target_: src.models.components.multiscale.MultiscaleClassifier.from_arm
+  arm: arm6_spatial_gate
+  num_classes: 4
+  channels: 32
+  dropout: 0.3
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+compile: false

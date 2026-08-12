@@ -13,6 +13,11 @@ defaults:
   - extras: default
   - hydra: default
 
+  # Step 15's fixed training protocol. Listed after the groups it constrains so it wins
+  # over their defaults, and before `experiment` so an experiment can still amend it.
+  # null leaves each group's own defaults in place.
+  - protocol: null
+
   # experiment configs allow for version control of specific hyperparameters
   # e.g. best hyperparameters for given model and datamodule
   - experiment: null

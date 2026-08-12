@@ -1,0 +1,31 @@
+# Step 9, Baseline 6: classical multiscale CNN with no quantum branch and no gating.
+# The control for Step 11: any gain the adaptive multiscale branch shows over this is
+# attributable to the gating, not merely to being multiscale.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.mri_classification_module.MRIClassificationModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.transfer.FixedMultiscaleCNN
+  num_classes: 4
+  channels: 32
+  kernel_sizes: [3, 5, 7]
+  dropout: 0.3
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+
+compile: false

@@ -1,0 +1,66 @@
+# @package _global_
+
+# Step 15: the fixed training protocol.
+#
+#   "The training protocol must be fixed before final testing. Do not change
+#    hyperparameters after seeing test or external validation results."
+#
+# This file is the single source of truth for that protocol. Every model the study
+# compares - all seven Step 9 baselines, the three branches, and the final fused
+# classifier - trains under it, so any difference in reported performance comes from the
+# architecture rather than from its training schedule.
+#
+# The reference notebook locked a protocol for the final model only. Its Step 9 baselines
+# had been trained earlier with patience=5 and a single seed, which left them not
+# strictly comparable to the model they were meant to benchmark - a gap the notebook
+# itself flagged as an optional follow-up. See docs/DEVIATIONS.md (F8).
+#
+# Anything changed here changes every result in the study. Treat edits as a protocol
+# amendment, not a tweak, and re-run everything downstream.
+
+defaults:
+  - override /callbacks: mri
+
+trainer:
+  # Step 15: "train with early stopping" - max_epochs is the ceiling, not the target.
+  min_epochs: 1
+  max_epochs: 30
+
+callbacks:
+  early_stopping:
+    # Step 15: "Save the best model using validation macro-F1 or balanced accuracy,
+    # not only validation accuracy."
+    monitor: "val/f1_macro"
+    mode: "max"
+    # Step 15: "Use patience of 10 to 15 epochs."
+    patience: 12
+
+  model_checkpoint:
+    monitor: "val/f1_macro"
+    mode: "max"
+    save_top_k: 1
+    save_last: true
+
+data:
+  # Step 15: "select based on GPU memory, commonly 16 or 32".
+  batch_size: 32
+
+model:
+  optimizer:
+    # Step 15: "Optimizer: AdamW or Adam."
+    # Step 15: "Learning rate: ... Start with 1e-4 and 3e-4 for fine-tuning." The value
+    # is selected per stage on validation only; 1e-4 is the starting point.
+    lr: 1e-4
+    weight_decay: 1e-4
+
+  scheduler:
+    # Step 15: "Scheduler: cosine annealing or ReduceLROnPlateau."
+    # Tied to the epoch ceiling so the cosine cycle always matches the run length.
+    T_max: ${trainer.max_epochs}
+
+# Step 15: "Run at least three seeds for the final model and major baselines."
+# Sweep with: python src/train.py -m experiment=<name> seed=42,123,7
+seed: 42
+
+# Reported back to Hydra for hyperparameter search; also the model-selection metric.
+optimized_metric: "val/f1_macro"

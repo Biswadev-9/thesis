@@ -1,0 +1,32 @@
+# Step 9, Baseline 4: ViT-B/16 transfer learning - the Transformer baseline.
+# Frozen except the last two encoder layers.
+# NOTE: ViT's positional embeddings are fixed for 224px input; see docs/DEVIATIONS.md (F2).
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.mri_classification_module.MRIClassificationModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.transfer.TransferBackbone
+  arch: vit_b_16
+  num_classes: 4
+  weights: DEFAULT
+  freeze_backbone: true
+  dropout: 0.3
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+
+compile: false

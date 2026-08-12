@@ -1,0 +1,42 @@
+# Step 10: classical feature extraction branch.
+#
+# "The classical branch should extract stable anatomical and texture patterns from MRI
+#  images. Use a strong pretrained backbone and fine-tune it carefully."
+#
+# EfficientNet-B0, selected on the Step 9 baseline comparison. Features are taken from the
+# global average pooling layer (1280-d), which is the extraction point Step 10 names.
+#
+# The classification head here is temporary: Step 13 discards it and fuses the 1280-d
+# features with the other two branches.
+#
+# NOTE: the reference's freezing depth leaves ~79% of this backbone trainable - see
+# docs/DEVIATIONS.md. Dropout and weight decay carry more of the regularisation burden
+# than the phrase "fine-tune carefully" suggests.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.mri_classification_module.MRIClassificationModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.transfer.TransferBackbone
+  arch: efficientnet_b0
+  num_classes: 4
+  weights: DEFAULT
+  freeze_backbone: true
+  dropout: 0.3
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+compile: false

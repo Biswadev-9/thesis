@@ -21,7 +21,12 @@ from torch.utils.data import DataLoader, Dataset
 
 from src.data.components.datasets import BrainTumorDataset
 from src.data.components.sampling import compute_class_weights, make_weighted_sampler
-from src.data.components.split_builder import CLASS_MAP, build_split, load_split
+from src.data.components.split_builder import (
+    CLASS_MAP,
+    build_split,
+    load_split,
+    locate_dataset_root,
+)
 from src.data.components.transforms import build_transform, describe_pipeline
 from src.utils import RankedLogger
 
@@ -92,8 +97,12 @@ class BTMRIDataModule(LightningDataModule):
 
     @property
     def raw_dir(self) -> Path:
-        """:return: Absolute path to the raw dataset tree."""
-        return Path(self.hparams.data_dir) / self.hparams.raw_subdir
+        """:return: Absolute path to the raw dataset tree.
+
+        Resolved with :func:`locate_dataset_root`, because the published archive unpacks
+        into a doubly-nested folder. Paths in the split table are relative to this.
+        """
+        return locate_dataset_root(Path(self.hparams.data_dir) / self.hparams.raw_subdir)
 
     @property
     def image_root(self) -> Path:

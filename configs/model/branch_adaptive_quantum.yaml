@@ -1,0 +1,41 @@
+# Step 12: adaptive quantum-classical branch.
+#
+# The Step 11 spatial-gate branch feeds a learned softmax mixture over five circuits -
+# fixed, deeper, strongly-entangling, combined, and data re-uploading - so the circuit
+# choice is conditioned on each image rather than fixed offline.
+#
+# Follows the reference notebook by instruction. The specification asks for the variants
+# to be compared and the best selected; the notebook mixes them adaptively instead.
+#
+# COST: five circuits per forward pass on a CPU simulator. This is the slowest model in
+# the study by a wide margin. Train it once, then cache its features (Phase 5).
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.mri_classification_module.MRIClassificationModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.quantum.AdaptiveQuantumClassifier
+  channels: 32
+  num_classes: 4
+  n_qubits: 4
+  # null mixes over all five circuits.
+  circuit_names: null
+  hidden_dims: [128, 64]
+  dropout: 0.3
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+compile: false

@@ -1,0 +1,34 @@
+# Step 10: "Save the intermediate feature embeddings for later feature separability
+# analysis using t-SNE or UMAP."
+#
+#   python src/analyze.py analysis=step10_embeddings \
+#       analysis.ckpt_path=logs/train/runs/<timestamp>
+#
+# Writes embeddings.npz (reused by Step 20), a 2-D projection figure, and a silhouette
+# score per split computed in the ORIGINAL feature space.
+
+_target_: src.analysis.embeddings.EmbeddingAnalysis
+
+name: step10_embeddings
+
+# Checkpoint file, or a run directory containing checkpoints/. Required.
+ckpt_path: null
+
+# Config used to rebuild the architecture before loading weights. Checkpoints here carry
+# weights only, by design - see src/utils/serialization.py.
+model_cfg: ${model}
+# Hydra would otherwise instantiate the nested ${model} config into a live module before
+# this analysis is constructed. It needs the *config*, so it can rebuild the architecture
+# and load checkpoint weights into it.
+_recursive_: false
+
+
+splits: ["train", "val", "test"]
+
+# tsne | umap | none
+projection: tsne
+max_points: 1500
+perplexity: 30.0
+
+seed: ${seed}
+accelerator: auto

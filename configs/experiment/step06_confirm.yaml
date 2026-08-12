@@ -1,0 +1,35 @@
+# @package _global_
+
+# Step 6 confirmation: re-check the preprocessing winner with the real backbone.
+#
+# The Step 6 sweep (`analysis=step06_preprocessing`) ranks eleven-plus candidates with a
+# small proxy model at 128px on a balanced subset. That is affordable, but it is not the
+# model the study reports, so committing the whole pipeline to its winner on proxy
+# evidence alone would be weak. This experiment re-runs the top candidates with
+# EfficientNet-B0 on the full training and validation splits, under the fixed protocol.
+#
+# Materialise the candidates first, then sweep:
+#
+#   python src/prepare_dataset.py -m recipe=diffusion_i10_k15,diffusion_i15_k15
+#   python src/train.py -m experiment=step06_confirm \
+#       data.recipe=null,diffusion_i10_k15,diffusion_i15_k15 trainer=gpu
+#
+# Selection is on validation macro-F1 only. The internal test set stays untouched until
+# Step 16. See docs/DEVIATIONS.md (F5).
+
+defaults:
+  - override /data: bt_mri
+  - override /model: baseline_efficientnet_b0
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step06", "preprocessing", "confirmation"]
+
+data:
+  # Overridden per sweep entry. null reads the raw tree, which combined with
+  # normalize=imagenet is the "conventional preprocessing" reference.
+  recipe: null
+  normalize: imagenet
+  augment: true
+  use_weighted_sampler: true

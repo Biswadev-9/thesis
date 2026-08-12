@@ -1,0 +1,35 @@
+# Step 9, Baseline 5: fixed QCNN - small CNN stem feeding a fixed quantum circuit.
+# The control for Step 12's adaptive quantum branch.
+#
+# Runs on PennyLane's CPU simulator, so every forward pass shuttles tensors off the GPU
+# and back. Expect this baseline to be far slower than the others, and do not enable
+# mixed precision or DDP for it.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.mri_classification_module.MRIClassificationModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.quantum.FixedQCNN
+  num_classes: 4
+  # Step 12: "Start with 4 qubits for comparison with prior QCNN work."
+  n_qubits: 4
+  channels: [16, 32]
+  circuit_name: fixed
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+
+compile: false

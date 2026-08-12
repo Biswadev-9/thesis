@@ -14,6 +14,14 @@ defaults:
   - rich_progress_bar
   - _self_
 
+# Step 20 requires training time and memory alongside parameter counts and inference
+# time. Measuring during training is the only way to capture it without retraining
+# everything later, so it attaches to every run. See docs/DEVIATIONS.md (F11).
+resource_monitor:
+  _target_: src.utils.resource_monitor.ResourceMonitor
+  filename: resource_usage.json
+  log_epoch_time: true
+
 model_checkpoint:
   dirpath: ${paths.output_dir}/checkpoints
   filename: "epoch_{epoch:03d}"

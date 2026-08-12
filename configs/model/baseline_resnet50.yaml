@@ -1,0 +1,33 @@
+# Step 9, Baseline 2: ResNet50 transfer learning.
+# The specification offers ResNet50 or DenseNet121; ResNet50 matches the reference.
+# Backbone frozen except the final residual stage.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.mri_classification_module.MRIClassificationModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.transfer.TransferBackbone
+  arch: resnet50
+  num_classes: 4
+  # DEFAULT is IMAGENET1K_V2 for ResNet50, matching the reference. null = random init.
+  weights: DEFAULT
+  freeze_backbone: true
+  dropout: 0.3
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+
+compile: false

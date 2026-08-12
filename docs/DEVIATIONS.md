@@ -43,11 +43,18 @@ thesis.**
 
 **Implementation** 224 × 224, configurable via `data.image_size`.
 
-**Reason** `torchvision.models.vit_b_16` and `swin_t` carry positional embeddings baked
-for 224 and cannot accept 256 without interpolating them. Interpolated embeddings would
-change Baselines 4 and 4b relative to their published ImageNet behaviour and confound
-the comparison against the CNN baselines that Step 9 exists to make. The specification
-says "such as", so 256 reads as illustrative rather than mandatory.
+**Reason 1 — the source images are natively 224 × 224.** Confirmed by the Step 4 audit on
+the real dataset: all 6,597 images are exactly 224×224, RGB, 8-bit. Resizing to 256 would
+*upsample every image in the study*, fabricating detail that was never acquired and paying
+about 30 % more compute per forward pass for it. 224 is not a compromise here; it is the
+native resolution.
+
+**Reason 2 — the Transformer baselines require it.** `torchvision.models.vit_b_16` and
+`swin_t` carry positional embeddings baked for 224 and cannot accept 256 without
+interpolating them, which would change Baselines 4 and 4b relative to their published
+ImageNet behaviour and confound exactly the comparison Step 9 exists to make.
+
+The specification says "such as", so 256 reads as illustrative rather than mandatory.
 
 **Also** ImageNet mean/std normalisation is retained as the default. It *is* z-score
 normalisation with fixed statistics, which Step 5 permits, and the pretrained backbones
@@ -65,6 +72,12 @@ regions."
 `validate_crop_preserves_foreground`, which checks that no pixel above the in-brain Otsu
 threshold is lost. **Default off**; the Step 4 audit reports whether enabling it would be
 safe, so the decision rests on evidence.
+
+**Outcome on the real dataset**: the validation **fails** — up to 5.1 % of bright tissue
+would be lost on the worst-case training image, against a 0.1 % tolerance. Cropping
+therefore stays disabled, and this is now an evidence-backed decision rather than the
+notebook's silent omission. Worth stating in the methods section: background cropping was
+implemented, tested against the specification's own condition, and rejected on measurement.
 
 ### F13 (partial) — A0 and A1 can now differ · `done` for the mechanism
 
@@ -247,6 +260,207 @@ is materialised, by `src/prepare_dataset.py`.
 `BTMRIProxyDataModule.test_dataloader` returns the validation loader. Step 16 requires
 the internal test set to stay unseen until the final model is evaluated once, and a
 selection study has no legitimate reason to read it. Unit-tested.
+
+---
+
+## Phase 3 — baselines and the fixed protocol (Steps 9, 15)
+
+### F8 — One protocol, applied to everything · `done`
+
+**Specification** Step 15: *"The training protocol must be fixed before final testing"*,
+with AdamW or Adam, lr from {1e-4, 3e-4} tuned on validation, batch 16 or 32, early
+stopping with patience 10–15, cosine annealing or ReduceLROnPlateau, selection on
+validation macro-F1 or balanced accuracy, and *"at least three seeds for the final model
+and major baselines"*.
+
+**Notebook** Locked a protocol for the final model only. Its Step 9 baselines had already
+been trained with `patience=5` and a **single seed**, before the protocol existed — so the
+baselines were not strictly comparable to the model they benchmarked. The notebook flagged
+this itself as an optional follow-up and never did it.
+
+**Now** `configs/protocol/fixed.yaml` is the single source. It is a `@package _global_`
+config listed after the groups it constrains, so it overrides each model's own defaults,
+and before `experiment`, so an experiment can still amend it deliberately. Every Step 9
+baseline, every branch and the final classifier compose against it.
+
+`tests/test_baselines.py` asserts the protocol against the specification's clauses
+directly — optimiser family, learning rate, batch size, patience range, scheduler,
+selection metric — so a later edit that silently violates Step 15 fails the suite rather
+than quietly changing results.
+
+Three seeds for all seven baselines is one multirun:
+
+```
+python src/train.py -m experiment=step09_baselines model='glob(baseline_*)' seed=42,123,7 trainer=gpu
+```
+
+### F11 — Training time and memory are measured during training · `done` (mechanism)
+
+**Specification** Step 20: report *"trainable parameters, inference time, training time,
+memory usage, and performance metrics"*.
+
+**Notebook** Reported parameter counts and inference time only. Training cost and memory
+were never captured, and by the time Step 20 ran the models had long since trained.
+
+**Now** `src/utils/resource_monitor.py` attaches to every run from Step 9 onward and
+writes `resource_usage.json` into the Hydra run directory, beside `checkpoints/`. It
+records wall-clock training time, per-epoch times, total and trainable parameter counts,
+and CUDA peak memory. Capturing it during training is the only way to have it later
+without retraining everything. The Step 20 aggregation lands in Phase 7.
+
+### D9 — Seven baselines retained, not six · `done`
+
+The specification lists six. The notebook built seven, adding Swin-T alongside ViT where
+Step 9 offers "ViT **or** Swin Transformer". Both are kept: the extra run is cheap and it
+strengthens the Transformer comparison rather than weakening it.
+
+### D10 — One wrapper for four pretrained architectures · `done`
+
+ResNet50, EfficientNet-B0, ViT-B/16 and Swin-T have materially different forward paths —
+ViT and Swin pool tokens internally. `TransferBackbone` replaces each model's
+classification head with `Identity`, so all four emit a plain feature vector and satisfy
+the D1 `extract` contract identically. Feature widths are **read from the head being
+replaced** rather than hard-coded, so a torchvision definition change surfaces as a test
+failure instead of a silent mismatch.
+
+### Observation — "fine-tune the last few blocks" is not equally careful across backbones
+
+Following the reference's per-architecture unfreezing depth, the fraction of backbone
+parameters left trainable varies far more than the phrasing suggests:
+
+| Baseline | Unfrozen | Trainable / total |
+|---|---|---|
+| ResNet50 | `layer4` | 14,964,736 / 23,508,032 — 64 % |
+| EfficientNet-B0 | `features[-3:]` | 3,155,740 / 4,007,548 — **79 %** |
+| ViT-B/16 | last 2 encoder layers | 14,175,744 / 85,798,656 — 17 % |
+| Swin-T | final stage | 15,366,576 / 27,519,354 — 56 % |
+
+EfficientNet-B0 is the outlier: its last three feature blocks hold most of the network, so
+"fine-tune only the last few blocks" leaves nearly four fifths of it trainable. That is
+worth stating because EfficientNet-B0 is **also the Step 10 classical branch backbone**,
+and Step 10 asks for dropout and weight decay specifically "to reduce overfitting". The
+reference behaviour is preserved rather than changed — this is recorded so the overfitting
+discussion can be accurate, and `tests/test_baselines.py` pins the figures per
+architecture so they cannot drift unnoticed.
+
+### PennyLane gate — cleared
+
+The plan flagged PennyLane on Python 3.13 / torch 2.13 as the project's highest risk,
+gating Baseline 5 and all of Phase 4. **Verified working**: PennyLane 0.45.1, with
+`qml.qnn.TorchLayer` forward and backward passes and finite gradients reaching the input.
+Now an active dependency in `requirements.txt`.
+
+`src/models/components/quantum.py` provides all five Step 12 circuit variants up front —
+two depths (2 and 4 layers) and two entanglement patterns (basic ring vs
+strongly-entangling), plus data re-uploading — so Step 12's requirement to "test at least
+two circuit depths and at least two entanglement patterns" is satisfiable. Step 9 uses the
+fixed circuit only; Phase 4 adds the adaptive mixture over all five.
+
+**Cost, measured**: a single `fast_dev_run` batch through the fixed QCNN took 13 s against
+under 2 s for the CNN baselines. The simulator runs on CPU, so every forward pass moves
+tensors off the accelerator and back. Quantum models therefore cannot use mixed precision,
+are impractical under DDP, and will dominate the wall-clock time of any sweep containing
+them. Budget for this when scheduling Steps 11–12.
+
+---
+
+## Phase 4 — the three branches (Steps 10, 11, 12)
+
+Steps 11 and 12 **follow the reference notebook rather than the specification**, by
+explicit instruction. Entries here record where notebook and specification differ, so the
+write-up can be accurate about which was followed.
+
+### Step 10 — classical branch reuses the Step 9 wrapper · `done`
+
+EfficientNet-B0 with features taken from global average pooling (1280-d), exactly as the
+notebook. It is configured as the same `TransferBackbone` used for Baseline 3, so the
+branch and the baseline are provably the same architecture rather than two similar
+definitions that could drift apart.
+
+One deliberate difference: the notebook applied dropout *before* returning the features,
+making the extracted embedding stochastic. Here dropout sits between the features and the
+head, so `features` are deterministic. At extraction time the branch is frozen and in eval
+mode, where dropout is the identity, so the cached features are identical either way — but
+the deterministic version cannot be accidentally sampled in train mode.
+
+### Step 11 — paths are 3x3 / 5x5 / dilated, not 3x3 / 5x5 / 7x7 · notebook
+
+The specification suggests "3 x 3, 5 x 5, and 7 x 7, or ... dilated convolutions with
+different dilation rates". The notebook mixes the two: two plain kernels plus one dilated
+3x3 at dilation 3. That reaches a 7x7 receptive field at 3x3 parameter cost, so the
+intended fine/medium/broad span is preserved. Followed as in the notebook; asserted in
+`tests/test_branches.py` so the three paths cannot silently collapse to the same reach.
+
+### Step 11 — the ungated arm projects back to the shared width · `done`
+
+Arm 4 concatenates all three paths, which would give it three times the feature width of
+every other arm and therefore a larger classifier head. A 1x1 projection returns it to the
+shared width, so the ablation compares *gating* rather than head capacity. The notebook
+does the same; it is recorded because the alternative is an easy and invisible mistake.
+
+### Step 11 — the spatial gate is larger than its control · recorded
+
+Arm 6's gate head (two 1x1 convolutions) has more parameters than Arm 5's gate
+(two linear layers on pooled features). The arms are otherwise identical — same stem, same
+three paths, verified parameter-shape-by-shape in the tests. Any advantage Arm 6 shows
+should therefore be reported alongside the fact that it is also the slightly larger module.
+Both remain far smaller than the classifier they feed.
+
+### Step 12 — a learned mixture, not a selected circuit · notebook
+
+The specification says to test the circuit variants and that "the final model should use
+only the configuration selected by validation performance" — i.e. pick one offline. The
+notebook instead learns a per-image softmax mixture over all five circuits. Followed as in
+the notebook.
+
+Worth stating plainly in the write-up: this is a *different and stronger* claim than the
+specification asks for, and it costs five circuit evaluations per forward pass rather than
+one. The mixture weights are exposed as `quantum_weights` so the analysis can report which
+circuits the model actually relies on, and whether the mixture degenerates onto a single
+expert — in which case the specification's simpler design would have sufficed.
+
+### F11a — class weights are no longer written into checkpoints · `done`
+
+Found by reloading a trained branch: `criterion.class_weights` was a persistent buffer, so
+it entered the checkpoint, and a freshly constructed module — whose buffer is still `None`
+and has no matching key — could not load it under `strict=True`. Every branch reload from
+Step 13 onward would have hit this.
+
+The buffer is now non-persistent. It still moves with `.to(device)`, but stays out of the
+checkpoint, which is correct: class weights are *derived* from the training split by
+`MRIClassificationModule.setup`, not learned. Pinned by
+`tests/test_checkpoints.py::test_checkpoints_carry_no_derived_class_weights`.
+
+### D11 — freezing means `requires_grad = False` **and** `.eval()` · `done`
+
+`src.utils.checkpoints.freeze` does both. Disabling gradients alone leaves BatchNorm
+updating its running statistics on every forward pass, so a nominally frozen branch would
+produce drifting features — silently corrupting the cached features Steps 13-15 are built
+on, in a way that no error would report. Pinned by a test that asserts the running mean is
+unchanged after a forward pass.
+
+### D12 — Step 11's morphology analysis states its limits in its own output · `done`
+
+The notebook's morphology conclusions rest on three weak points. All three are now emitted
+in the analysis summary rather than living only in prose:
+
+1. the tumour region is an **Otsu intensity proxy**, not a segmentation mask — this dataset
+   ships none;
+2. the three gate weights are a **softmax and sum to 1**, so they are not independent; a
+   negative correlation on one path is partly the arithmetic consequence of positive
+   correlations on the others, not separate evidence;
+3. **pooled correlations can be manufactured** by between-class differences in both lesion
+   size and gate behaviour, so correlations are reported per class as well, and only
+   directions holding *within* classes should be claimed.
+
+`No-tumor` is excluded from the correlation entirely: there is no lesion whose extent could
+correlate with anything.
+
+### D13 — silhouette is computed in feature space, not on the projection · `done`
+
+Step 10's separability analysis scores the raw embeddings. t-SNE and UMAP do not preserve
+global distances, so a silhouette taken on their 2-D output measures the projection's
+layout rather than the features' separability. The projection is kept for the figure only.
 
 ---
 

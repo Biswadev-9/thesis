@@ -1,0 +1,29 @@
+# @package _global_
+#
+# Step 12: train the adaptive quantum-classical branch.
+#
+#   python src/train.py -m experiment=step12_adaptive_quantum seed=42,123,7
+#
+# BUDGET THIS. Five circuits per forward pass on a CPU simulator makes this the slowest
+# model in the study - roughly five times the fixed QCNN baseline, which was itself an
+# order of magnitude slower than the CNNs. Consider a reduced max_epochs for the seed
+# sweep, and do not enable mixed precision or DDP.
+#
+# The specification is explicit that this branch "should not be presented as automatically
+# superior" - its role is to test whether quantum feature transformations help at all.
+# Step 20 answers that question; this step only produces the branch.
+
+defaults:
+  - override /data: bt_mri
+  - override /model: branch_adaptive_quantum
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step12", "branch", "quantum"]
+
+data:
+  recipe: null
+  normalize: imagenet
+  augment: true
+  use_weighted_sampler: true

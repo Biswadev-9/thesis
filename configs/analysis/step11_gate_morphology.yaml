@@ -1,0 +1,35 @@
+# Step 11: "Report the learned scale weights for example images to show whether the model
+# adapts to tumor morphology."
+#
+#   python src/analyze.py analysis=step11_gate_morphology \
+#       analysis.ckpt_path=logs/train/runs/<arm6 timestamp>
+#
+# Requires a spatial-gate arm (arm6 or arm7) - the global-gate arms emit one weight per
+# image, which has no spatial structure to correlate against.
+#
+# Writes the weight-map figure, a per-image measurement table, and Spearman correlations
+# between proxy tumour extent and each path's weight, pooled and per class.
+
+_target_: src.analysis.gate_morphology.GateMorphologyAnalysis
+
+name: step11_gate_morphology
+
+ckpt_path: null
+model_cfg: ${model}
+# Hydra would otherwise instantiate the nested ${model} config into a live module before
+# this analysis is constructed. It needs the *config*, so it can rebuild the architecture
+# and load checkpoint weights into it.
+_recursive_: false
+
+
+# Images per tumour class used for the correlation. No-tumor is excluded: there is no
+# lesion whose extent could correlate with anything.
+samples_per_class: 40
+
+# Images per class shown in the weight-map figure (all four classes appear here).
+examples_per_class: 1
+
+background_threshold: 10
+
+seed: ${seed}
+accelerator: auto

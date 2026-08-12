@@ -19,6 +19,7 @@ instruction, and Phase 3 onward trains on the cached mirror it produces. See
 docs/DEVIATIONS.md (F4, F5).
 """
 
+import time
 from typing import Any, Dict, List, Optional
 
 import matplotlib
@@ -114,9 +115,10 @@ class PreprocessingStudy(Analysis):
 
         edge_images = self._sample_images(datamodule)
         rows: List[Dict[str, Any]] = []
+        started = time.perf_counter()
 
         for position, recipe in enumerate(recipes, start=1):
-            log.info(f"[{position}/{len(recipes)}] {recipe}")
+            log.info(f"[{position}/{len(recipes)}] {recipe}{self._eta(started, position, len(recipes))}")
             filter_fn = build_recipe(recipe)
 
             proxy = BTMRIProxyDataModule(
@@ -153,6 +155,9 @@ class PreprocessingStudy(Analysis):
                 f"balanced acc {metrics['balanced_accuracy']:.4f} | "
                 f"edge preservation {edge_score:.4f}"
             )
+            # Rewrite after every candidate: this sweep takes minutes on CPU, and an
+            # interrupt should cost the current candidate rather than all of them.
+            self.save_table(pd.DataFrame(rows), "step06_preprocessing_comparison.csv", quiet=True)
 
         results = pd.DataFrame(rows).sort_values("macro_f1", ascending=False).reset_index(drop=True)
         self.save_table(results, "step06_preprocessing_comparison.csv")
@@ -204,6 +209,27 @@ class PreprocessingStudy(Analysis):
         return summary
 
     # ---------------------------------------------------------------- internals
+
+    @staticmethod
+    def _eta(started: float, position: int, total: int) -> str:
+        """Format a remaining-time estimate for the progress log.
+
+        A sweep of this length on CPU looks stalled without one; the estimate is what tells
+        a reader the run is progressing rather than hung.
+
+        :param started: ``time.perf_counter()`` at the start of the sweep.
+        :param position: 1-based index of the candidate about to run.
+        :param total: Total candidates.
+        :return: A short suffix such as ``"  (~6m remaining)"``, empty for the first.
+        """
+        if position <= 1:
+            return ""
+        per_item = (time.perf_counter() - started) / (position - 1)
+        remaining = per_item * (total - position + 1)
+        if remaining < 90:
+            return f"  (~{remaining:.0f}s remaining)"
+        return f"  (~{remaining / 60:.0f}m remaining)"
+
 
     @staticmethod
     def _family(recipe: str) -> str:

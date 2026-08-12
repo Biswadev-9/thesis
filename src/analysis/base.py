@@ -66,17 +66,23 @@ class Analysis:
 
     # ------------------------------------------------------------- artefacts
 
-    def save_table(self, df: pd.DataFrame, filename: str, index: bool = False) -> Path:
+    def save_table(
+        self, df: pd.DataFrame, filename: str, index: bool = False, quiet: bool = False
+    ) -> Path:
         """Write a table into the run directory.
 
         :param df: Table to write.
         :param filename: File name, including the ``.csv`` suffix.
         :param index: Whether to write the index column.
+        :param quiet: Suppress the log line. Used when a long sweep rewrites the same
+            table after every candidate so an interrupted run keeps its completed work -
+            logging each rewrite would bury the actual progress messages.
         :return: The path written.
         """
         path = self.output_dir / filename
         df.to_csv(path, index=index)
-        log.info(f"[{self.name}] wrote {path.name} ({len(df)} rows)")
+        if not quiet:
+            log.info(f"[{self.name}] wrote {path.name} ({len(df)} rows)")
         return path
 
     def save_json(self, payload: Dict[str, Any], filename: str) -> Path:
