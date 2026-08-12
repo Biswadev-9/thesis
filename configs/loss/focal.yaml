@@ -1,0 +1,7 @@
+# Step 8: FL = -alpha_t (1 - p_t)^gamma log(p_t)
+# Corrected relative to the reference notebook, which computed pt = exp(-CE_weighted).
+# See docs/DEVIATIONS.md (F6).
+_target_: src.models.components.losses.FocalLoss
+gamma: 2.0
+use_class_weights: true
+reduction: mean

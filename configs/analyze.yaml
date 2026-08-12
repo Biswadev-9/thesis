@@ -1,0 +1,25 @@
+# @package _global_
+
+# Entry point for the study's non-training stages: the Step 4 audit, the Step 6 and
+# Step 8 selection studies, and the Steps 16-23 evaluation and reporting suite.
+#
+#   python src/analyze.py analysis=step04_audit
+
+defaults:
+  - _self_
+  - data: bt_mri
+  - analysis: step04_audit
+  - paths: default
+  - extras: default
+  - hydra: default
+
+  # optional local config for machine/user specific settings
+  - optional local: default
+
+# task name, determines output directory path
+task_name: "analyze"
+
+tags: ["analysis"]
+
+# seed for random number generators in pytorch, numpy and python.random
+seed: 42

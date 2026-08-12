@@ -1,0 +1,31 @@
+# Callbacks for every MRI run.
+#
+# Step 15: "Save the best model using validation macro-F1 or balanced accuracy, not only
+# validation accuracy." Both checkpointing and early stopping therefore monitor
+# val/f1_macro rather than the template's default val/acc.
+#
+# Patience is set by configs/protocol/fixed.yaml in Phase 3; the value here is a
+# permissive default so Phase 1 and 2 smoke runs are not cut short.
+
+defaults:
+  - model_checkpoint
+  - early_stopping
+  - model_summary
+  - rich_progress_bar
+  - _self_
+
+model_checkpoint:
+  dirpath: ${paths.output_dir}/checkpoints
+  filename: "epoch_{epoch:03d}"
+  monitor: "val/f1_macro"
+  mode: "max"
+  save_last: True
+  auto_insert_metric_name: False
+
+early_stopping:
+  monitor: "val/f1_macro"
+  patience: 100
+  mode: "max"
+
+model_summary:
+  max_depth: -1

@@ -1,0 +1,6 @@
+# The reference notebook's focal loss, retained ONLY to regenerate its published
+# Step 8 / Step 14 tables for comparison. Do not use for new results.
+_target_: src.models.components.losses.LegacyFocalLoss
+gamma: 2.0
+use_class_weights: true
+reduction: mean

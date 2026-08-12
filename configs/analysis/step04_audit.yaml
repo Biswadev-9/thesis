@@ -1,0 +1,21 @@
+# Step 4: initial data audit and quality control.
+#
+#   python src/analyze.py analysis=step04_audit
+#
+# Emits dataset_audit_table.csv, image_audit.csv, class_distribution.{csv,png},
+# sample_images.png and step04_audit_summary.json into the run directory.
+# Every figure is computed from the data - none is transcribed. See docs/DEVIATIONS.md (F1).
+
+_target_: src.analysis.data_audit.DataAuditAnalysis
+
+name: step04_audit
+
+# Representative images shown per class (Step 4: "Inspect representative images").
+sample_images_per_class: 5
+
+# Also test whether the Step 5 background crop would remove bright tissue, so the crop
+# can be enabled on evidence. Training images only - never validation or test.
+validate_cropping: true
+crop_validation_samples: 60
+
+seed: ${seed}

@@ -1,0 +1,6 @@
+# Unweighted cross-entropy.
+# Step 14 permits only class-weighted CE or focal loss as the *selectable* final loss,
+# so this exists as a reference row in the ablation, not as a candidate.
+_target_: src.models.components.losses.CrossEntropyLoss
+use_class_weights: false
+label_smoothing: 0.0

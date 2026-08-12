@@ -56,7 +56,16 @@ class MNISTLitModule(LightningModule):
 
         # this line allows to access init params with 'self.hparams' attribute
         # also ensures init params will be stored in ckpt
-        self.save_hyperparameters(logger=False)
+        #
+        # `net`, `optimizer` and `scheduler` are excluded: Hydra supplies the latter two
+        # as `functools.partial` objects and `net` as a live module, and pickling any of
+        # them into the checkpoint makes it unloadable under torch >= 2.6, whose
+        # `torch.load` defaults to `weights_only=True`. They are kept as plain
+        # attributes instead, and reconstructed from config when a checkpoint is loaded.
+        self.save_hyperparameters(logger=False, ignore=["net", "optimizer", "scheduler"])
+
+        self.optimizer_factory = optimizer
+        self.scheduler_factory = scheduler
 
         self.net = net
 
@@ -198,9 +207,9 @@ class MNISTLitModule(LightningModule):
 
         :return: A dict containing the configured optimizers and learning-rate schedulers to be used for training.
         """
-        optimizer = self.hparams.optimizer(params=self.trainer.model.parameters())
-        if self.hparams.scheduler is not None:
-            scheduler = self.hparams.scheduler(optimizer=optimizer)
+        optimizer = self.optimizer_factory(params=self.trainer.model.parameters())
+        if self.scheduler_factory is not None:
+            scheduler = self.scheduler_factory(optimizer=optimizer)
             return {
                 "optimizer": optimizer,
                 "lr_scheduler": {

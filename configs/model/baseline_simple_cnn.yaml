@@ -1,0 +1,31 @@
+# Step 9, Baseline 1: simple CNN trained from scratch.
+# The "no pretrained prior" reference point - without it the study cannot separate
+# architectural benefit from transfer-learning benefit.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.mri_classification_module.MRIClassificationModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-4
+
+# Step 15: cosine annealing. T_max is set from trainer.max_epochs in the protocol config.
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.backbones.SimpleCNN
+  num_classes: 4
+  channels: [32, 64, 128, 256]
+  dropout: 0.3
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+
+compile: false

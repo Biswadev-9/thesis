@@ -1,0 +1,6 @@
+# Step 8: "Start with stratified splitting and class-weighted cross-entropy."
+# Weights are inverse-frequency, derived from the training split only, and injected by
+# MRIClassificationModule.setup() from the datamodule.
+_target_: src.models.components.losses.CrossEntropyLoss
+use_class_weights: true
+label_smoothing: 0.0

@@ -1,19 +1,22 @@
 import platform
+from importlib.metadata import PackageNotFoundError, version
 
-import pkg_resources
 from lightning.fabric.accelerators import TPUAccelerator
 
 
 def _package_available(package_name: str) -> bool:
     """Check if a package is available in your environment.
 
+    Uses `importlib.metadata` rather than `pkg_resources`, which setuptools removed and
+    which is absent on Python 3.12+.
+
     :param package_name: The name of the package to be checked.
 
     :return: `True` if the package is available. `False` otherwise.
     """
     try:
-        return pkg_resources.require(package_name) is not None
-    except pkg_resources.DistributionNotFound:
+        return version(package_name) is not None
+    except PackageNotFoundError:
         return False
 
 

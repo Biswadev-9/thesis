@@ -1,0 +1,45 @@
+_target_: src.data.bt_mri_datamodule.BTMRIDataModule
+
+data_dir: ${paths.data_dir}
+
+# Raw dataset tree: data/raw/bt_mri/{Training,Testing}/{Glioma,Meningioma,Pituitary,No-tumor}/
+raw_subdir: raw/bt_mri
+
+# Single source of truth for split membership. Built once by prepare_data().
+split_subpath: splits/dataset_split.csv
+
+# Preprocessing recipe under data/processed/. null reads the raw images.
+# Recipes (diffusion, wiener, clahe, ...) are materialised in Phase 2 / Step 6.
+recipe: null
+
+# --- Step 5: standardised preprocessing, shared by every model ---
+# 224 rather than the spec's suggested 256: torchvision's vit_b_16 and swin_t have
+# positional embeddings baked for 224 and would need interpolation at 256, confounding
+# Baselines 4/4b against the CNN baselines. See docs/DEVIATIONS.md (F2).
+image_size: 224
+
+# imagenet | zscore | minmax | none
+# "none" is ablation row A0's raw-image condition.
+normalize: imagenet
+
+# Background cropping is permitted by Step 5 only when it does not remove tumour
+# regions. Off by default; validate with the Step 4 audit before enabling.
+crop_background: false
+
+# --- Step 7: augmentation, training split only ---
+augment: true
+
+# --- Step 8: balanced sampling on the training loader only ---
+use_weighted_sampler: true
+
+# --- Step 15: fixed protocol ---
+batch_size: 32
+
+# 0 on Windows: worker processes are spawned, not forked.
+num_workers: 0
+pin_memory: false
+
+# --- Step 3: leak-free stratified 70/15/15 ---
+seed: 42
+val_frac: 0.15
+test_frac: 0.15
