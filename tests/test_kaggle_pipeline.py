@@ -260,6 +260,67 @@ def test_max_time_uses_lightnings_format(seconds, expected):
     assert kp._hms(seconds) == expected
 
 
+def test_dataloader_workers_default_to_zero():
+    """Workers pass tensors through /dev/shm, which is small in Kaggle's container.
+
+    When it fills they block rather than raise, and the stage hangs silently until the
+    session is killed. Throughput is not worth a lost session, so the default is safe and
+    raising it is a deliberate act.
+    """
+    assert kp.parse_args([]).num_workers == 0
+    assert kp.parse_args(["--num-workers", "4"]).num_workers == 4
+
+
+def test_only_the_smoke_profile_polices_stage_duration():
+    """A smoke stage runs one epoch on three batches; hours means a deadlock.
+
+    A full run's quantum stages legitimately take hours, so a timeout there would kill
+    real work.
+    """
+    assert _pipeline(profile="smoke").stage_timeout == 20 * 60
+    assert _pipeline(profile="fast").stage_timeout is None
+    assert _pipeline(profile="full").stage_timeout is None
+
+
+def test_stage_timeout_can_be_set_or_disabled_by_hand():
+    """:return: None."""
+    assert _pipeline(profile="full", stage_timeout=45).stage_timeout == 45 * 60
+    assert _pipeline(profile="smoke", stage_timeout=0).stage_timeout is None
+
+
+def test_a_hung_stage_is_killed_and_reported(tmp_path):
+    """The watchdog must end a deadlocked stage rather than let it eat the session."""
+    pipe = _pipeline(profile="smoke", stage_timeout=0.02)  # ~1.2 s
+    pipe.root = tmp_path
+    pipe.log_root = tmp_path / "logs"
+    pipe.pipeline_dir = tmp_path / "logs" / "pipeline"
+
+    kp.HEARTBEAT_SECONDS, original = 0.2, kp.HEARTBEAT_SECONDS
+    try:
+        code, hung = pipe._spawn(
+            [sys.executable, "-c", "import time; time.sleep(60)"], tmp_path / "stage.log"
+        )
+    finally:
+        kp.HEARTBEAT_SECONDS = original
+
+    assert hung, "the watchdog should have killed it"
+    assert code != 0
+
+
+def test_a_healthy_stage_is_not_killed(tmp_path):
+    """:param tmp_path: Temporary directory."""
+    pipe = _pipeline(profile="smoke")
+    pipe.root = tmp_path
+    pipe.log_root = tmp_path / "logs"
+    pipe.pipeline_dir = tmp_path / "logs" / "pipeline"
+
+    code, hung = pipe._spawn(
+        [sys.executable, "-c", "print('done')"], tmp_path / "stage.log"
+    )
+    assert (code, hung) == (0, False)
+    assert "done" in (tmp_path / "stage.log").read_text()
+
+
 def test_checkpoints_are_never_bundled():
     """The results archive must stay small enough to download."""
     assert ".ckpt" not in kp.BUNDLE_SUFFIXES

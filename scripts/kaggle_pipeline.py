@@ -47,6 +47,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -338,6 +339,16 @@ def setup_kaggle_data(
 
 #: Seconds held back from the time budget so the manifest and bundle still get written.
 RESERVE_SECONDS = 480
+
+#: How often a running stage reports that it is still alive. Progress bars are off, so
+#: without this a long run prints nothing between starting and finishing and is
+#: indistinguishable from a hang.
+HEARTBEAT_SECONDS = 300
+
+#: Minutes before a stage is presumed hung, per profile. Every smoke stage trains one
+#: epoch on three batches, so twenty minutes is already absurd; a full run's quantum
+#: stages legitimately take hours, so they are not policed.
+STAGE_TIMEOUT_MINUTES: Dict[str, Optional[float]] = {"smoke": 20.0, "fast": None, "full": None}
 
 #: A stage shorter than this is not worth starting near the end of a session.
 MIN_STAGE_SECONDS = 240
@@ -767,7 +778,7 @@ class Pipeline:
         self.echo(f"            {' '.join(argv[1:])}")
 
         began = time.time()
-        code = self._spawn(argv, out / "stage.log")
+        code, hung = self._spawn(argv, out / "stage.log")
         elapsed = time.time() - began
 
         truncated = bool(cap and elapsed >= 0.95 * cap)
@@ -779,6 +790,21 @@ class Pipeline:
             "out_dir": str(out),
             "overrides": overrides,
         }
+
+        if hung:
+            record["status"] = "timeout"
+            self.echo(
+                f"  [FAIL]    {stage.id} was killed after {elapsed / 60:.0f} min with no "
+                "sign of finishing.\n"
+                "            A stage this long under this profile means a deadlock, "
+                "usually a dataloader\n"
+                "            worker starved of shared memory. Re-run with "
+                "--num-workers 0."
+            )
+            self.records.append(record)
+            if stage.optional:
+                return "failed"
+            raise StageFailed(f"{stage.id} timed out")
 
         if code != 0:
             self.echo(f"  [FAIL]    {stage.id}  exit {code}  after {elapsed / 60:.1f} min")
@@ -804,12 +830,24 @@ class Pipeline:
         self.echo(f"  [ok]      {stage.id}  in {elapsed / 60:.1f} min")
         return "done"
 
-    def _spawn(self, argv: List[str], log_path: Path) -> int:
+    @property
+    def stage_timeout(self) -> Optional[float]:
+        """:return: Seconds before a stage is presumed hung, or ``None`` for no limit."""
+        if self.args.stage_timeout is not None:
+            return self.args.stage_timeout * 60 or None
+        minutes = STAGE_TIMEOUT_MINUTES.get(self.args.profile)
+        return minutes * 60 if minutes else None
+
+    def _spawn(self, argv: List[str], log_path: Path) -> Tuple[int, bool]:
         """Run a subprocess, echoing its output and teeing it to a file.
+
+        A watchdog thread reports progress and enforces the stage timeout. Without it a
+        stage that deadlocks - a dataloader worker starved of shared memory is the usual
+        way - prints nothing and blocks until the session is killed hours later.
 
         :param argv: Command to run.
         :param log_path: File the output is copied into.
-        :return: The process exit code.
+        :return: ``(exit code, timed out)``.
         """
         env = dict(os.environ)
         env.setdefault("PYTHONUNBUFFERED", "1")
@@ -829,14 +867,42 @@ class Pipeline:
                 bufsize=1,
             )
             assert process.stdout is not None
-            for line in process.stdout:
-                sys.stdout.write(line)
-                # A notebook cell's stdout is a pipe, so Python block-buffers it and a
-                # long stage looks hung for minutes at a time. Flush per line.
-                sys.stdout.flush()
-                handle.write(line)
-            process.stdout.close()
-            return process.wait()
+
+            began = time.time()
+            finished = threading.Event()
+            timed_out = threading.Event()
+            limit = self.stage_timeout
+
+            def watchdog() -> None:
+                """Report liveness, and kill the stage if it exceeds its timeout."""
+                while not finished.wait(HEARTBEAT_SECONDS):
+                    elapsed = time.time() - began
+                    if limit is not None and elapsed > limit:
+                        timed_out.set()
+                        self.echo(
+                            f"  [timeout] no completion after {elapsed / 60:.0f} min; "
+                            "killing the stage"
+                        )
+                        process.kill()
+                        return
+                    self.echo(f"  [....]    still running, {elapsed / 60:.0f} min elapsed")
+
+            monitor = threading.Thread(target=watchdog, daemon=True)
+            monitor.start()
+
+            try:
+                for line in process.stdout:
+                    sys.stdout.write(line)
+                    # A notebook cell's stdout is a pipe, so Python block-buffers it and
+                    # a long stage looks hung for minutes at a time. Flush per line.
+                    sys.stdout.flush()
+                    handle.write(line)
+                process.stdout.close()
+                code = process.wait()
+            finally:
+                finished.set()
+
+            return code, timed_out.is_set()
 
 
 def _hms(seconds: float) -> str:
@@ -1493,7 +1559,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Quantum models run their circuits on a CPU simulator; keeping the whole "
         "model on CPU avoids moving tensors off the accelerator every batch.",
     )
-    parser.add_argument("--num-workers", type=int, default=2, help="Dataloader workers.")
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="Dataloader workers. 0 by default: worker processes pass tensors through "
+        "/dev/shm, which is small in a Kaggle container, and when it fills the workers "
+        "block forever instead of erroring. Raise it once a run is proven stable.",
+    )
+    parser.add_argument(
+        "--stage-timeout",
+        type=float,
+        default=None,
+        help="Minutes before a stage is killed as hung. Default: 20 under --profile "
+        "smoke, none otherwise, where a quantum stage legitimately runs for hours.",
+    )
 
     parser.add_argument("--only", default=None, help="Comma-separated stage ids or groups.")
     parser.add_argument("--from", dest="from_stage", default=None, help="Start at this stage.")

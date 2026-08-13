@@ -97,7 +97,11 @@ code(r'''
 # ---------------------------------------------------------------------------- settings
 PROFILE        = "smoke"      # "smoke" | "fast" | "full"
 BUDGET_HOURS   = 11.0          # stop and save before Kaggle's 12h cut-off
-NUM_WORKERS    = 2             # dataloader workers; Kaggle GPU boxes have 4 cores
+NUM_WORKERS    = 0             # 0 is the safe value. Worker processes pass tensors
+                               # through /dev/shm, which is small in Kaggle's container;
+                               # when it fills they block forever instead of erroring,
+                               # and the stage hangs silently. Try 2 only once a full
+                               # run has completed cleanly.
 
 GITHUB_USER    = "Biswadev-9"
 REPO_NAME      = "thesis"
