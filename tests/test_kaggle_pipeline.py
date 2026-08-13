@@ -305,6 +305,37 @@ def test_report_reads_the_pinned_directory_not_whatever_it_can_find(tmp_path):
     assert "focal" not in report
 
 
+def test_preflight_refuses_to_start_without_the_dataset(tmp_path):
+    """A missing dataset must stop the run, not produce twenty identical failures.
+
+    Every stage reads the same image tree. Without this guard a session with no data
+    attached burns twenty-odd stages twelve seconds apart and writes a report that reads
+    like the study collapsed rather than like a setup mistake.
+    """
+    pipe = _pipeline()
+    pipe.root = tmp_path
+
+    with pytest.raises(SystemExit, match="Preflight failed"):
+        pipe.preflight()
+
+    # An empty directory left behind by a failed download must not count as success.
+    (tmp_path / "data" / "raw" / "bt_mri").mkdir(parents=True)
+    with pytest.raises(SystemExit, match="holds 0 images"):
+        pipe.preflight()
+
+
+def test_preflight_passes_once_images_are_present(tmp_path):
+    """:param tmp_path: Temporary project root."""
+    classes = tmp_path / "data" / "raw" / "bt_mri" / "Training" / "Glioma"
+    classes.mkdir(parents=True)
+    for index in range(100):
+        (classes / f"{index}.jpg").write_bytes(b"")
+
+    pipe = _pipeline()
+    pipe.root = tmp_path
+    pipe.preflight()  # must not raise
+
+
 def test_out_dir_is_pinned_and_derived_from_the_stage_id():
     """Downstream stages address checkpoints by path, so the path cannot be a timestamp."""
     pipe = _pipeline(profile="full")

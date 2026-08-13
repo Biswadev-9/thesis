@@ -396,6 +396,38 @@ class Pipeline:
 
     # -- execution -------------------------------------------------------------------
 
+    def preflight(self) -> None:
+        """Fail before the first stage if the dataset is not really there.
+
+        Every stage reads the same image tree, so a missing dataset does not produce one
+        useful error - it produces twenty identical ones, twelve seconds apart, and a
+        report that looks like the study collapsed rather than like a setup mistake.
+
+        :raises SystemExit: If ``data/raw/bt_mri`` holds no images.
+        """
+        raw = self.root / "data" / "raw" / "bt_mri"
+        found = 0
+        if raw.exists():
+            for path in raw.rglob("*"):
+                if path.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                    found += 1
+                    if found >= 100:
+                        break
+
+        if found >= 100:
+            return
+
+        state = "does not exist" if not raw.exists() else f"holds {found} images"
+        raise SystemExit(
+            f"\nPreflight failed: {raw} {state}.\n\n"
+            "Every stage reads this tree, so nothing can run. On Kaggle, attach the\n"
+            "dataset in the right-hand sidebar:\n"
+            "  + Add Input -> Datasets -> mri-brain-tumor-dataset-4-class-7023-images\n"
+            "Elsewhere, run scripts/download_data.sh (or .ps1).\n\n"
+            "If the images live somewhere else, symlink that directory to the path\n"
+            "above. Pass --no-preflight to skip this check.\n"
+        )
+
     def remaining(self) -> float:
         """:return: Seconds left in the budget, less the archiving reserve."""
         return self.deadline - time.time() - RESERVE_SECONDS
@@ -1214,6 +1246,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--keep-going", action="store_true", help="Continue past a failing stage."
     )
     parser.add_argument("--progress", action="store_true", help="Show Lightning progress bars.")
+    parser.add_argument(
+        "--no-preflight",
+        dest="preflight",
+        action="store_false",
+        help="Skip the check that the image dataset is present before starting.",
+    )
 
     parser.add_argument(
         "--no-apply-selections",
@@ -1304,6 +1342,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not pipe.protocol_intact:
         pipe.echo("WARNING: this profile shortens the fixed protocol. Results are not reportable.")
     pipe.echo("=" * 88)
+
+    if args.preflight:
+        pipe.preflight()
 
     status = 0
     try:

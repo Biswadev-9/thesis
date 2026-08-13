@@ -1,0 +1,497 @@
+{
+  "generated": "2026-08-13T09:00:56+00:00",
+  "profile": "smoke",
+  "protocol_intact": false,
+  "seeds": [
+    42
+  ],
+  "gpu": true,
+  "selections": {
+    "recipe": null,
+    "imbalance": ""
+  },
+  "elapsed_hours": 0.08,
+  "python": "3.12.13",
+  "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",
+  "stages": [
+    {
+      "stage": "step04_audit",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 11.0,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/analyze/runs/step04_audit",
+      "overrides": [
+        "analysis=step04_audit",
+        "data.num_workers=2",
+        "data.pin_memory=true"
+      ]
+    },
+    {
+      "stage": "step06_preprocessing",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 11.2,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/analyze/runs/step06_preprocessing",
+      "overrides": [
+        "analysis=step06_preprocessing",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "analysis.epochs=1",
+        "analysis.per_class_train=24",
+        "analysis.per_class_val=12",
+        "analysis.diffusion_iterations=[10]",
+        "analysis.diffusion_kappas=[15.0]",
+        "analysis.comparators=[conventional,clahe]",
+        "analysis.edge_sample_size=4"
+      ]
+    },
+    {
+      "stage": "step06_materialise",
+      "status": "skipped"
+    },
+    {
+      "stage": "step08_imbalance",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 11.5,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/analyze/runs/step08_imbalance",
+      "overrides": [
+        "analysis=step08_imbalance",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "analysis.epochs=1",
+        "analysis.per_class_train=24",
+        "analysis.per_class_val=12"
+      ]
+    },
+    {
+      "stage": "step09_baselines/baseline_simple_cnn/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 12.4,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step09_baselines/baseline_simple_cnn/seed_42",
+      "overrides": [
+        "experiment=step09_baselines",
+        "model=baseline_simple_cnn",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step09_baselines/baseline_resnet50/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 13.3,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step09_baselines/baseline_resnet50/seed_42",
+      "overrides": [
+        "experiment=step09_baselines",
+        "model=baseline_resnet50",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step09_baselines/baseline_efficientnet_b0/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 12.5,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step09_baselines/baseline_efficientnet_b0/seed_42",
+      "overrides": [
+        "experiment=step09_baselines",
+        "model=baseline_efficientnet_b0",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step09_baselines/baseline_vit/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 15.1,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step09_baselines/baseline_vit/seed_42",
+      "overrides": [
+        "experiment=step09_baselines",
+        "model=baseline_vit",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step09_baselines/baseline_swin/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 13.3,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step09_baselines/baseline_swin/seed_42",
+      "overrides": [
+        "experiment=step09_baselines",
+        "model=baseline_swin",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step09_baselines/baseline_fixed_qcnn/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 13.6,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step09_baselines/baseline_fixed_qcnn/seed_42",
+      "overrides": [
+        "experiment=step09_baselines",
+        "model=baseline_fixed_qcnn",
+        "seed=42",
+        "trainer=default",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step09_baselines/baseline_fixed_multiscale/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 12.2,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step09_baselines/baseline_fixed_multiscale/seed_42",
+      "overrides": [
+        "experiment=step09_baselines",
+        "model=baseline_fixed_multiscale",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step10_classical/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 12.2,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step10_classical/seed_42",
+      "overrides": [
+        "experiment=step10_classical",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step10_embeddings",
+      "status": "skipped"
+    },
+    {
+      "stage": "step11_arm_ablation/arm1_fixed_3x3/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 12.0,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm1_fixed_3x3/seed_42",
+      "overrides": [
+        "experiment=step11_arm_ablation",
+        "model.net.arm=arm1_fixed_3x3",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step11_arm_ablation/arm2_fixed_5x5/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 11.9,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm2_fixed_5x5/seed_42",
+      "overrides": [
+        "experiment=step11_arm_ablation",
+        "model.net.arm=arm2_fixed_5x5",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step11_arm_ablation/arm3_fixed_dilated/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 11.9,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm3_fixed_dilated/seed_42",
+      "overrides": [
+        "experiment=step11_arm_ablation",
+        "model.net.arm=arm3_fixed_dilated",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step11_arm_ablation/arm4_concat_nogate/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 11.9,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm4_concat_nogate/seed_42",
+      "overrides": [
+        "experiment=step11_arm_ablation",
+        "model.net.arm=arm4_concat_nogate",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step11_arm_ablation/arm5_global_gate/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 12.1,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm5_global_gate/seed_42",
+      "overrides": [
+        "experiment=step11_arm_ablation",
+        "model.net.arm=arm5_global_gate",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step11_arm_ablation/arm6_spatial_gate/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 12.4,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm6_spatial_gate/seed_42",
+      "overrides": [
+        "experiment=step11_arm_ablation",
+        "model.net.arm=arm6_spatial_gate",
+        "seed=42",
+        "trainer=gpu",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step11_arm_ablation/arm7_spatial_gate_quantum/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 13.5,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm7_spatial_gate_quantum/seed_42",
+      "overrides": [
+        "experiment=step11_arm_ablation",
+        "model.net.arm=arm7_spatial_gate_quantum",
+        "seed=42",
+        "trainer=default",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step11_arm_ablation/arm8_global_gate_quantum/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 13.6,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm8_global_gate_quantum/seed_42",
+      "overrides": [
+        "experiment=step11_arm_ablation",
+        "model.net.arm=arm8_global_gate_quantum",
+        "seed=42",
+        "trainer=default",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "step11_gate_morphology",
+      "status": "skipped"
+    },
+    {
+      "stage": "step12_adaptive_quantum/seed_42",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 13.5,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/train/runs/step12_adaptive_quantum/seed_42",
+      "overrides": [
+        "experiment=step12_adaptive_quantum",
+        "seed=42",
+        "trainer=default",
+        "data.recipe=null",
+        "data.num_workers=2",
+        "data.pin_memory=true",
+        "++trainer.max_epochs=1",
+        "++trainer.limit_train_batches=3",
+        "++trainer.limit_val_batches=3",
+        "++trainer.limit_test_batches=3",
+        "++callbacks.early_stopping.patience=1",
+        "logger=csv"
+      ]
+    },
+    {
+      "stage": "features",
+      "status": "blocked",
+      "reason": "extract_features needs the Step 10 and Step 12 checkpoints; run those stages first"
+    },
+    {
+      "stage": "step13_fusion",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 11.4,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/analyze/runs/step13_fusion",
+      "overrides": [
+        "analysis=step13_fusion",
+        "analysis.tag=smoke",
+        "analysis.epochs=2"
+      ]
+    },
+    {
+      "stage": "step14_loss_selection",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 11.2,
+      "out_dir": "/kaggle/working/thesis/logs/_smoke/analyze/runs/step14_loss_selection",
+      "overrides": [
+        "analysis=step14_loss_selection",
+        "analysis.tag=smoke",
+        "analysis.epochs=2"
+      ]
+    },
+    {
+      "stage": "step15_final/seed_42",
+      "status": "blocked",
+      "reason": "Step 15 needs the loss Step 14 selected; run step14_loss_selection first or pass --loss"
+    },
+    {
+      "stage": "step16_internal",
+      "status": "blocked",
+      "reason": "missing trained checkpoints for: classical_ckpt, quantum_ckpt, fusion_ckpt"
+    },
+    {
+      "stage": "step17_external",
+      "status": "blocked",
+      "reason": "missing trained checkpoints for: classical_ckpt, quantum_ckpt, fusion_ckpt"
+    },
+    {
+      "stage": "step18_robustness",
+      "status": "blocked",
+      "reason": "Step 18 compares against the EfficientNet-B0 and ViT baselines; run the Step 9 stages first"
+    }
+  ]
+}

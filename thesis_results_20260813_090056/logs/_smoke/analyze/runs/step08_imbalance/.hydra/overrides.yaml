@@ -1,0 +1,6 @@
+- analysis=step08_imbalance
+- data.num_workers=2
+- data.pin_memory=true
+- analysis.epochs=1
+- analysis.per_class_train=24
+- analysis.per_class_val=12

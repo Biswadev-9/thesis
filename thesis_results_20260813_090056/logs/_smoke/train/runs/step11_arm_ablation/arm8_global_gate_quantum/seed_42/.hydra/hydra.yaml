@@ -1,0 +1,197 @@
+hydra:
+  run:
+    dir: /kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm8_global_gate_quantum/seed_42
+  sweep:
+    dir: ${paths.log_dir}/${task_name}/multiruns/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+  launcher:
+    _target_: hydra._internal.core_plugins.basic_launcher.BasicLauncher
+  sweeper:
+    _target_: hydra._internal.core_plugins.basic_sweeper.BasicSweeper
+    max_batch_size: null
+    params: null
+  help:
+    app_name: ${hydra.job.name}
+    header: '${hydra.help.app_name} is powered by Hydra.
+
+      '
+    footer: 'Powered by Hydra (https://hydra.cc)
+
+      Use --hydra-help to view Hydra specific help
+
+      '
+    template: '${hydra.help.header}
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (group=option)
+
+
+      $APP_CONFIG_GROUPS
+
+
+      == Config ==
+
+      Override anything in the config (foo.bar=value)
+
+
+      $CONFIG
+
+
+      ${hydra.help.footer}
+
+      '
+  hydra_help:
+    template: 'Hydra (${hydra.runtime.version})
+
+      See https://hydra.cc for more info.
+
+
+      == Flags ==
+
+      $FLAGS_HELP
+
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (For example, append hydra/job_logging=disabled
+      to command line)
+
+
+      $HYDRA_CONFIG_GROUPS
+
+
+      Use ''--cfg hydra'' to Show the Hydra config.
+
+      '
+    hydra_help: ???
+  hydra_logging:
+    version: 1
+    formatters:
+      colorlog:
+        (): colorlog.ColoredFormatter
+        format: '[%(cyan)s%(asctime)s%(reset)s][%(purple)sHYDRA%(reset)s] %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: colorlog
+        stream: ext://sys.stdout
+    root:
+      level: INFO
+      handlers:
+      - console
+    disable_existing_loggers: false
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
+      colorlog:
+        (): colorlog.ColoredFormatter
+        format: '[%(cyan)s%(asctime)s%(reset)s][%(blue)s%(name)s%(reset)s][%(log_color)s%(levelname)s%(reset)s]
+          - %(message)s'
+        log_colors:
+          DEBUG: purple
+          INFO: green
+          WARNING: yellow
+          ERROR: red
+          CRITICAL: red
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: colorlog
+        stream: ext://sys.stdout
+      file:
+        class: logging.FileHandler
+        formatter: simple
+        filename: ${hydra.runtime.output_dir}/${task_name}.log
+    root:
+      level: INFO
+      handlers:
+      - console
+      - file
+    disable_existing_loggers: false
+  env: {}
+  mode: RUN
+  searchpath: []
+  callbacks: {}
+  output_subdir: .hydra
+  overrides:
+    hydra:
+    - hydra.run.dir=/kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm8_global_gate_quantum/seed_42
+    - hydra.mode=RUN
+    task:
+    - experiment=step11_arm_ablation
+    - model.net.arm=arm8_global_gate_quantum
+    - seed=42
+    - trainer=default
+    - data.recipe=null
+    - data.num_workers=2
+    - data.pin_memory=true
+    - ++trainer.max_epochs=1
+    - ++trainer.limit_train_batches=3
+    - ++trainer.limit_val_batches=3
+    - ++trainer.limit_test_batches=3
+    - ++callbacks.early_stopping.patience=1
+    - logger=csv
+    - ++trainer.max_time=00:10:48:14
+    - ~callbacks.rich_progress_bar
+    - ++trainer.enable_progress_bar=false
+    - ++callbacks.model_summary.max_depth=1
+  job:
+    name: train
+    chdir: null
+    override_dirname: ++callbacks.early_stopping.patience=1,++callbacks.model_summary.max_depth=1,++trainer.enable_progress_bar=false,++trainer.limit_test_batches=3,++trainer.limit_train_batches=3,++trainer.limit_val_batches=3,++trainer.max_epochs=1,++trainer.max_time=00:10:48:14,data.num_workers=2,data.pin_memory=true,data.recipe=null,experiment=step11_arm_ablation,logger=csv,model.net.arm=arm8_global_gate_quantum,seed=42,trainer=default,~callbacks.rich_progress_bar
+    id: ???
+    num: ???
+    config_name: train.yaml
+    env_set: {}
+    env_copy: []
+    config:
+      override_dirname:
+        kv_sep: '='
+        item_sep: ','
+        exclude_keys: []
+  runtime:
+    version: 1.3.2
+    version_base: '1.3'
+    cwd: /kaggle/working/thesis
+    config_sources:
+    - path: hydra.conf
+      schema: pkg
+      provider: hydra
+    - path: /kaggle/working/thesis/configs
+      schema: file
+      provider: main
+    - path: hydra_plugins.hydra_colorlog.conf
+      schema: pkg
+      provider: hydra-colorlog
+    - path: ''
+      schema: structured
+      provider: schema
+    output_dir: /kaggle/working/thesis/logs/_smoke/train/runs/step11_arm_ablation/arm8_global_gate_quantum/seed_42
+    choices:
+      debug: null
+      local: default
+      hparams_search: null
+      experiment: step11_arm_ablation
+      protocol: fixed
+      hydra: default
+      extras: default
+      paths: default
+      trainer: default
+      logger: csv
+      callbacks: mri
+      model: branch_multiscale
+      loss@model.criterion: weighted_ce
+      data: bt_mri
+      hydra/env: default
+      hydra/callbacks: null
+      hydra/job_logging: colorlog
+      hydra/hydra_logging: colorlog
+      hydra/hydra_help: default
+      hydra/help: default
+      hydra/sweeper: basic
+      hydra/launcher: basic
+      hydra/output: default
+  verbose: false

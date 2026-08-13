@@ -237,8 +237,15 @@ def find_figshare():
 
 
 def link(source, name):
+    """Point data/raw/<name> at an attached input, replacing an empty leftover."""
     target = RAW / name
-    if target.is_symlink() or target.exists():
+    if target.is_symlink():
+        target.unlink()
+    elif target.is_dir() and not any(target.iterdir()):
+        # A failed download leaves the directory behind. Left in place it silently
+        # blocks the symlink, and every stage then fails on an empty dataset.
+        target.rmdir()
+    elif target.exists():
         print(f"{name}: already present at {target}")
         return
     target.symlink_to(source, target_is_directory=True)
@@ -247,16 +254,13 @@ def link(source, name):
 
 primary, figshare = find_primary(), find_figshare()
 
+print("Attached inputs:", [p.name for p in sorted(INPUT.glob("*"))] or "NONE")
+
 if primary:
     link(primary, "bt_mri")
 else:
     print("Primary dataset not attached; trying to download it instead.")
-    if subprocess.run(["bash", "scripts/download_data.sh"]).returncode != 0:
-        raise SystemExit(
-            "Could not obtain the primary dataset. Add it as an input:\n"
-            "  + Add Input -> Datasets -> "
-            "mohamadabouali1/mri-brain-tumor-dataset-4-class-7023-images"
-        )
+    subprocess.run(["bash", "scripts/download_data.sh"])
 
 if figshare:
     link(figshare, "figshare")
@@ -266,8 +270,22 @@ else:
                     "ashkhagan/figshare-brain-tumor-dataset",
                     "-p", str(RAW / "figshare"), "--unzip"], check=False)
 
-n_images = sum(1 for _ in (RAW / "bt_mri").rglob("*.jpg"))
+# Verify, do not assume. Every later stage depends on this one directory, so a wrong
+# answer here costs a whole session: the pipeline would run 20-odd stages that each
+# fail on missing data. Raise a real exception -- SystemExit is treated as a clean
+# exit by IPython and Run All would carry on regardless.
+n_images = sum(1 for _ in (RAW / "bt_mri").rglob("*.jpg")) if (RAW / "bt_mri").exists() else 0
 print(f"\n{n_images} jpg files visible under data/raw/bt_mri")
+
+if n_images < 1000:
+    raise RuntimeError(
+        f"Expected ~7000 images under data/raw/bt_mri, found {n_images}.\n"
+        "The dataset is not attached. In the right-hand sidebar:\n"
+        "  + Add Input -> Datasets -> search "
+        "'mri-brain-tumor-dataset-4-class-7023-images' -> Add\n"
+        f"Currently attached: {[p.name for p in sorted(INPUT.glob('*'))] or 'nothing'}"
+    )
+print("Data OK.")
 ''')
 
 md("""## 6 · Carry the previous session forward

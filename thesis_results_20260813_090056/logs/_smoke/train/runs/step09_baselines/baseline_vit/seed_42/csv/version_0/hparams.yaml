@@ -1,0 +1,108 @@
+model:
+  criterion:
+    _target_: src.models.components.losses.CrossEntropyLoss
+    use_class_weights: true
+    label_smoothing: 0.0
+  _target_: src.models.mri_classification_module.MRIClassificationModule
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 0.0001
+    weight_decay: 0.0001
+  scheduler:
+    _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+    _partial_: true
+    T_max: ${trainer.max_epochs}
+  net:
+    _target_: src.models.components.transfer.TransferBackbone
+    arch: vit_b_16
+    num_classes: 4
+    weights: DEFAULT
+    freeze_backbone: true
+    dropout: 0.3
+  num_classes: 4
+  class_names:
+  - Glioma
+  - Meningioma
+  - Pituitary
+  - No-tumor
+  compile: false
+model/params/total: 85801732
+model/params/trainable: 14178820
+model/params/non_trainable: 71622912
+data:
+  _target_: src.data.bt_mri_datamodule.BTMRIDataModule
+  data_dir: ${paths.data_dir}
+  raw_subdir: raw/bt_mri
+  split_subpath: splits/dataset_split.csv
+  recipe: null
+  image_size: 224
+  normalize: imagenet
+  crop_background: false
+  augment: true
+  use_weighted_sampler: true
+  batch_size: 32
+  num_workers: 2
+  pin_memory: true
+  seed: 42
+  val_frac: 0.15
+  test_frac: 0.15
+trainer:
+  _target_: lightning.pytorch.trainer.Trainer
+  default_root_dir: ${paths.output_dir}
+  min_epochs: 1
+  max_epochs: 1
+  accelerator: gpu
+  devices: 1
+  check_val_every_n_epoch: 1
+  deterministic: false
+  limit_train_batches: 3
+  limit_val_batches: 3
+  limit_test_batches: 3
+  max_time: 00:10:50:46
+  enable_progress_bar: false
+callbacks:
+  model_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: epoch_{epoch:03d}
+    monitor: val/f1_macro
+    verbose: false
+    save_last: true
+    save_top_k: 1
+    mode: max
+    auto_insert_metric_name: false
+    save_weights_only: false
+    every_n_train_steps: null
+    train_time_interval: null
+    every_n_epochs: null
+    save_on_train_epoch_end: null
+  early_stopping:
+    _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: val/f1_macro
+    min_delta: 0.0
+    patience: 1
+    verbose: false
+    mode: max
+    strict: true
+    check_finite: true
+    stopping_threshold: null
+    divergence_threshold: null
+    check_on_train_epoch_end: null
+  model_summary:
+    _target_: lightning.pytorch.callbacks.RichModelSummary
+    max_depth: 1
+  resource_monitor:
+    _target_: src.utils.resource_monitor.ResourceMonitor
+    filename: resource_usage.json
+    log_epoch_time: true
+extras:
+  ignore_warnings: false
+  enforce_tags: true
+  print_config: true
+task_name: train
+tags:
+- step09
+- baseline
+ckpt_path: null
+seed: 42
