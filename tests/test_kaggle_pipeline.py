@@ -305,6 +305,208 @@ def test_report_reads_the_pinned_directory_not_whatever_it_can_find(tmp_path):
     assert "focal" not in report
 
 
+# ------------------------------------------------------------- finding the dataset
+
+
+def _make_dataset(root, images_per_class=30, classes=("Glioma", "Meningioma", "Pituitary", "No-tumor")):
+    """Build a dataset tree shaped like the real archive.
+
+    :param root: Directory that becomes the dataset root.
+    :param images_per_class: Files written per class per split.
+    :param classes: Class folder names to create.
+    :return: The dataset root.
+    """
+    for split in ("Training", "Testing"):
+        for name in classes:
+            folder = root / split / name
+            folder.mkdir(parents=True)
+            for index in range(images_per_class):
+                (folder / f"{name}_{index}.jpg").write_bytes(b"")
+    return root
+
+
+def _make_kaggle_mount(tmp_path):
+    """Reproduce the mount layout observed on Kaggle.
+
+    ``/kaggle/input/datasets/<owner>/<slug>/BT-MRI Dataset/BT-MRI Dataset/`` - six levels
+    down, and one level past what the loader can descend on its own. This exact shape is
+    what produced "No images found" from a correctly attached dataset.
+
+    :param tmp_path: Temporary directory standing in for ``/kaggle/input``.
+    :return: ``(input_root, true_dataset_root)``.
+    """
+    mount = tmp_path / "input"
+    nested = (
+        mount
+        / "datasets"
+        / "mohamadabouali1"
+        / "mri-brain-tumor-dataset-4-class-7023-images"
+        / "BT-MRI Dataset"
+        / "BT-MRI Dataset"
+    )
+    nested.mkdir(parents=True)
+    return mount, _make_dataset(nested)
+
+
+def test_finds_the_dataset_however_deeply_kaggle_nests_it(tmp_path):
+    """The search must reach the real Kaggle layout, not just the tidy one."""
+    mount, expected = _make_kaggle_mount(tmp_path)
+    found, inspected = kp.find_dataset_root(mount)
+    assert found == expected
+    assert inspected, "the inspected list feeds the error message"
+
+
+def test_finds_the_dataset_at_the_shallow_layout_too(tmp_path):
+    """Some accounts mount at /kaggle/input/<slug>/ with no extra nesting."""
+    mount = tmp_path / "input"
+    expected = _make_dataset(mount / "mri-brain-tumor-dataset-4-class-7023-images")
+    found, _ = kp.find_dataset_root(mount)
+    assert found == expected
+
+
+def test_a_root_needs_both_split_folders(tmp_path):
+    """Training alone is not a dataset root."""
+    partial = tmp_path / "input" / "ds"
+    for name in ("Glioma", "Meningioma", "Pituitary", "No-tumor"):
+        (partial / "Training" / name).mkdir(parents=True)
+    assert not kp.is_dataset_root(partial)
+    assert kp.find_dataset_root(tmp_path / "input")[0] is None
+
+
+def test_a_root_needs_all_four_classes(tmp_path):
+    """Three classes means the wrong tree, or a truncated download."""
+    partial = tmp_path / "input" / "ds"
+    partial.mkdir(parents=True)
+    _make_dataset(partial, classes=("Glioma", "Meningioma", "Pituitary"))
+    assert not kp.is_dataset_root(partial)
+
+
+def test_the_degraded_copies_are_never_selected(tmp_path):
+    """The archive ships blurred copies under the same four class names.
+
+    They have no Training/Testing division, which is the only thing separating them from
+    the real data. Selecting one would train the study on deliberately corrupted images.
+    """
+    mount = tmp_path / "input"
+    challenging = mount / "ds" / "Challenging Datasets" / "Blurred Dataset"
+    for name in ("Glioma", "Meningioma", "Pituitary", "No-tumor"):
+        folder = challenging / name
+        folder.mkdir(parents=True)
+        (folder / "blur.jpg").write_bytes(b"")
+
+    real = _make_dataset(mount / "ds" / "BT-MRI Dataset")
+    assert kp.find_dataset_root(mount)[0] == real
+
+
+def test_class_folder_spellings_agree_with_the_loader():
+    """The driver restates the loader's class-name normalisation; they must not drift."""
+    from src.data.components.split_builder import normalize_class_folder
+
+    for name in ("Glioma", "glioma", "No-tumor", "notumor", "no_tumor", "NO TUMOR",
+                 "meningioma_tumor", "Pituitary", "pituitary tumour"):
+        canonical = normalize_class_folder(name)
+        assert canonical is not None, name
+        assert kp._class_key(name) == kp._class_key(canonical), name
+
+    for name in ("Training", "Testing", "Challenging Datasets", "README"):
+        assert normalize_class_folder(name) is None
+        assert kp._class_key(name) not in kp._CLASS_KEYS
+
+
+def test_missing_dataset_error_says_where_it_looked(tmp_path):
+    """"Not found" is only actionable if it names the mount and the expected shape."""
+    mount = tmp_path / "input"
+    (mount / "some-other-dataset").mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        kp.setup_kaggle_data(tmp_path / "project", mount)
+
+    message = str(excinfo.value)
+    assert "some-other-dataset" in message          # what is mounted
+    assert "Directories inspected" in message       # where it looked
+    assert "Training" in message and "No-tumor" in message  # the expected structure
+    assert "Add Input" in message                   # how to fix it
+
+
+# ------------------------------------------------------------------------ linking
+
+
+def test_linking_points_at_the_root_the_loader_can_reach(tmp_path):
+    """The link must land on the split folders' parent, not the mount point.
+
+    Linking `/kaggle/input/datasets` instead put the split folders six levels down, and
+    the loader descends three. That one-level gap is the whole bug.
+    """
+    mount, expected = _make_kaggle_mount(tmp_path)
+    project = tmp_path / "project"
+
+    report = kp.setup_kaggle_data(project, mount)
+    assert report["primary_action"] in ("linked", "copied")
+    assert Path(report["primary_source"]) == expected
+
+    linked = project / "data" / "raw" / "bt_mri"
+    assert kp.is_dataset_root(linked), "loader must see Training/Testing immediately"
+    found, _ = kp.find_dataset_root(linked, max_depth=kp.LOADER_MAX_DEPTH)
+    assert found == linked
+
+
+def test_linking_replaces_an_empty_stale_directory(tmp_path):
+    """A failed download leaves data/raw/bt_mri behind and it blocks the fix."""
+    mount, _ = _make_kaggle_mount(tmp_path)
+    project = tmp_path / "project"
+    stale = project / "data" / "raw" / "bt_mri"
+    stale.mkdir(parents=True)
+
+    kp.setup_kaggle_data(project, mount)
+    assert kp.is_dataset_root(stale)
+
+
+def test_linking_keeps_a_directory_that_is_already_correct(tmp_path):
+    """Re-running setup must be free, not destructive."""
+    mount, _ = _make_kaggle_mount(tmp_path)
+    project = tmp_path / "project"
+
+    target = project / "data" / "raw" / "bt_mri"
+    target.mkdir(parents=True)
+    _make_dataset(target)
+    marker = target / "Training" / "Glioma" / "keep_me.jpg"
+    marker.write_bytes(b"")
+
+    assert kp.setup_kaggle_data(project, mount)["primary_action"] == "kept"
+    assert marker.is_file(), "an already-correct directory must survive untouched"
+
+
+def test_linking_refuses_to_destroy_unrelated_content(tmp_path):
+    """A non-empty directory that is not a dataset root is never silently replaced."""
+    mount, _ = _make_kaggle_mount(tmp_path)
+    project = tmp_path / "project"
+    target = project / "data" / "raw" / "bt_mri"
+    target.mkdir(parents=True)
+    (target / "something_important.txt").write_text("do not delete me")
+
+    with pytest.raises(RuntimeError, match="Refusing to replace"):
+        kp.setup_kaggle_data(project, mount)
+    assert (target / "something_important.txt").is_file()
+
+
+def test_figshare_is_optional_and_found_by_its_mat_files(tmp_path):
+    """:param tmp_path: Temporary directory."""
+    mount, _ = _make_kaggle_mount(tmp_path)
+    project = tmp_path / "project"
+
+    assert kp.setup_kaggle_data(project, mount)["external_source"] is None
+
+    external = mount / "figshare-brain-tumor-dataset" / "brainTumorDataPublic"
+    external.mkdir(parents=True)
+    (external / "1.mat").write_bytes(b"")
+    report = kp.setup_kaggle_data(project, mount)
+    assert Path(report["external_source"]) == external
+    assert (project / "data" / "raw" / "figshare" / "1.mat").exists()
+
+
+# ---------------------------------------------------------------------- preflight
+
+
 def test_preflight_refuses_to_start_without_the_dataset(tmp_path):
     """A missing dataset must stop the run, not produce twenty identical failures.
 
@@ -315,24 +517,64 @@ def test_preflight_refuses_to_start_without_the_dataset(tmp_path):
     pipe = _pipeline()
     pipe.root = tmp_path
 
-    with pytest.raises(SystemExit, match="Preflight failed"):
+    with pytest.raises(FileNotFoundError, match="does not exist"):
         pipe.preflight()
 
     # An empty directory left behind by a failed download must not count as success.
     (tmp_path / "data" / "raw" / "bt_mri").mkdir(parents=True)
-    with pytest.raises(SystemExit, match="holds 0 images"):
+    with pytest.raises(FileNotFoundError, match="not a dataset root"):
         pipe.preflight()
 
 
-def test_preflight_passes_once_images_are_present(tmp_path):
-    """:param tmp_path: Temporary project root."""
-    classes = tmp_path / "data" / "raw" / "bt_mri" / "Training" / "Glioma"
-    classes.mkdir(parents=True)
-    for index in range(100):
-        (classes / f"{index}.jpg").write_bytes(b"")
+def test_preflight_rejects_a_tree_the_loader_cannot_reach(tmp_path):
+    """Structure alone is not enough - it has to be within the loader's descent limit."""
+    raw = tmp_path / "data" / "raw" / "bt_mri"
+    buried = raw / "a" / "b" / "c" / "d" / "BT-MRI Dataset"
+    buried.mkdir(parents=True)
+    _make_dataset(buried)
 
     pipe = _pipeline()
     pipe.root = tmp_path
+    with pytest.raises(FileNotFoundError, match="nested too deeply"):
+        pipe.preflight()
+
+
+def test_preflight_rejects_a_truncated_dataset(tmp_path):
+    """Right folders, almost no images: a partial download, not a usable dataset."""
+    raw = tmp_path / "data" / "raw" / "bt_mri"
+    raw.mkdir(parents=True)
+    _make_dataset(raw, images_per_class=1)
+
+    pipe = _pipeline()
+    pipe.root = tmp_path
+    with pytest.raises(FileNotFoundError, match="only 8 images"):
+        pipe.preflight()
+
+
+def test_preflight_passes_on_a_complete_dataset(tmp_path):
+    """:param tmp_path: Temporary project root."""
+    raw = tmp_path / "data" / "raw" / "bt_mri"
+    raw.mkdir(parents=True)
+    _make_dataset(raw, images_per_class=40)
+
+    pipe = _pipeline()
+    pipe.root = tmp_path
+    pipe.log_root = tmp_path / "logs"
+    pipe.pipeline_dir = tmp_path / "logs" / "pipeline"
+    pipe.preflight()  # must not raise
+
+
+def test_preflight_passes_when_the_root_is_one_level_down(tmp_path):
+    """The archive's own nesting, which the loader does handle."""
+    raw = tmp_path / "data" / "raw" / "bt_mri"
+    nested = raw / "BT-MRI Dataset" / "BT-MRI Dataset"
+    nested.mkdir(parents=True)
+    _make_dataset(nested, images_per_class=40)
+
+    pipe = _pipeline()
+    pipe.root = tmp_path
+    pipe.log_root = tmp_path / "logs"
+    pipe.pipeline_dir = tmp_path / "logs" / "pipeline"
     pipe.preflight()  # must not raise
 
 

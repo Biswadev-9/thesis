@@ -505,7 +505,7 @@ python src/train.py data.recipe=clahe
 ./env/Scripts/python.exe -m pytest tests/ -q
 ```
 
-305 tests. They cover leakage, the corrected focal loss, protocol conformance to Step 15,
+322 tests. They cover leakage, the corrected focal loss, protocol conformance to Step 15,
 dataset-root disambiguation, the gate's per-pixel softmax, all eight ablation arms, the
 quantum mixture arithmetic, checkpoint round-tripping, and the Step 14 selection rule -
 including that plain CE cannot be selected and that ties break on calibration rather
@@ -513,7 +513,9 @@ than on test data, the once-only test lock, degradation determinism, and that gr
 reach the input pixels through the full pipeline. `test_kaggle_pipeline.py` additionally
 holds the §6 driver's stage graph to the study: its baseline, arm and Step 8 strategy
 tables are checked against the definitions they restate, so adding a ninth arm fails a
-test rather than silently never training it. Run them after changing anything in `src/`.
+test rather than silently never training it. It also covers dataset discovery against a
+synthetic replica of the deeper Kaggle mount, including the degraded-copy decoy and the
+loader's descent limit. Run them after changing anything in `src/`.
 
 > **`test_train_resume` is flaky.** It comes from the project template and asserts that
 > epoch 1 beats epoch 0. That held on MNIST; on 1 % of a brain-MRI split with a
@@ -555,10 +557,32 @@ JSON each study writes and applies them to every stage downstream — materialis
 recipe first if it needs a mirror. `--no-apply-selections` turns that off;
 `--recipe/--imbalance/--loss` force a value by hand.
 
+**Finds the dataset wherever the host mounted it.** `--setup-data` searches `/kaggle/input`
+for the directory holding **both** `Training/` and `Testing/` with all four class folders
+inside each, and links that directory — not the mount point — to `data/raw/bt_mri`:
+
+```bash
+python scripts/kaggle_pipeline.py --setup-data          # --input-root to search elsewhere
+```
+
+Matching on structure rather than on a path is what makes it portable: Kaggle mounts at
+`/kaggle/input/<slug>/` for some accounts and `/kaggle/input/datasets/<owner>/<slug>/` for
+others, and the archive then nests `BT-MRI Dataset/BT-MRI Dataset/` inside that. Requiring
+*both* split folders is also what keeps the archive's `Challenging Datasets/` tree out — it
+carries the same four class names but deliberately degraded images.
+
+Linking the split folders' parent is not cosmetic. `locate_dataset_root` descends
+`LOADER_MAX_DEPTH = 3` levels; on the deeper mount the split folders sit at level four, so
+linking the mount point produces `No images found` from a perfectly good dataset. The
+preflight now checks reachability at the loader's own limit, not just that files exist, and
+says which of the two problems it found.
+
 Useful flags:
 
 | Flag | Effect |
 |---|---|
+| `--setup-data` | find and link the attached datasets, then exit |
+| `--no-preflight` | skip the dataset check before the first stage |
 | `--only step16_internal` | one stage, or one group (`--only step09`) |
 | `--from step13_fusion` | start partway down the graph |
 | `--skip step11,step17` | leave stages out |

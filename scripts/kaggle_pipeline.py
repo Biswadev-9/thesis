@@ -52,7 +52,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -109,6 +109,232 @@ IMBALANCE_OVERRIDES: Dict[str, Any] = {
     "augmentation": ("plain_ce", False, True),
     "combined_sampler_weighting": ("weighted_ce", True, False),
 }
+
+# ------------------------------------------------------------------------------------ #
+# Finding the dataset
+# ------------------------------------------------------------------------------------ #
+
+#: Vendor split folders that identify a genuine dataset root. Requiring *both* is what
+#: keeps the archive's ``Challenging Datasets/`` tree out: it carries the same four class
+#: folders but deliberately degraded images, so matching on class folders alone could
+#: silently train the study on blurred copies. Mirrors ``locate_dataset_root`` in
+#: ``src/data/components/split_builder.py``.
+SPLIT_FOLDERS = ("Training", "Testing")
+
+#: Canonical class folders. Mirrors ``CLASS_MAP`` in the same module.
+CLASS_FOLDERS = ("Glioma", "Meningioma", "Pituitary", "No-tumor")
+
+#: How deep to hunt beneath a mount point. Kaggle mounts a dataset at
+#: ``/kaggle/input/<slug>/`` for some accounts and ``/kaggle/input/datasets/<owner>/<slug>/``
+#: for others, and this archive then nests ``BT-MRI Dataset/BT-MRI Dataset/`` inside that -
+#: six levels before the split folders appear. The limit only bounds a pathological walk.
+MAX_SEARCH_DEPTH = 8
+
+#: The loader's own descent limit. Anything the pipeline links must put the split folders
+#: within this many levels of ``data/raw/bt_mri`` or the loader will not find them - which
+#: is exactly how a correctly attached dataset produced "No images found".
+LOADER_MAX_DEPTH = 3
+
+#: Never worth descending into.
+_PRUNE_DIRS = frozenset({".git", "__pycache__", ".ipynb_checkpoints", ".cache", "node_modules"})
+
+
+def _class_key(name: str) -> str:
+    """Normalise a class-folder name for comparison.
+
+    Mirrors ``normalize_class_folder`` in ``src/data/components/split_builder.py`` so that
+    ``No-tumor``, ``no_tumor`` and ``notumor`` all agree. Restated rather than imported to
+    keep this script dependency-free - ``--list`` and the preflight must not pay for
+    pandas. ``test_kaggle_pipeline.py`` holds the two implementations together.
+
+    :param name: Folder name as it appears on disk.
+    :return: A comparison key.
+    """
+    key = "".join(ch for ch in name.lower() if ch.isalnum())
+    return key.removesuffix("tumour").removesuffix("tumor") or key
+
+
+#: Comparison keys of the four classes the study needs.
+_CLASS_KEYS = frozenset(_class_key(name) for name in CLASS_FOLDERS)
+
+
+def _subdirs(path: Path) -> List[Path]:
+    """:param path: Directory to list.
+
+    :return: Its subdirectories, or an empty list if it cannot be read.
+    """
+    try:
+        return sorted(child for child in path.iterdir() if child.is_dir())
+    except OSError:
+        return []
+
+
+def _has_class_folders(path: Path) -> bool:
+    """:param path: A candidate ``Training``/``Testing`` directory.
+
+    :return: Whether all four class folders are present, under any spelling.
+    """
+    return _CLASS_KEYS <= {_class_key(child.name) for child in _subdirs(path)}
+
+
+def is_dataset_root(path: Path) -> bool:
+    """Whether a directory is the primary dataset's root.
+
+    :param path: Directory to test.
+    :return: ``True`` when it holds both split folders and each carries the four classes.
+    """
+    splits = []
+    for wanted in SPLIT_FOLDERS:
+        match = next((c for c in _subdirs(path) if c.name.lower() == wanted.lower()), None)
+        if match is None:
+            return False
+        splits.append(match)
+    return all(_has_class_folders(split) for split in splits)
+
+
+def find_dataset_root(
+    search_root: Path, max_depth: int = MAX_SEARCH_DEPTH
+) -> Tuple[Optional[Path], List[Path]]:
+    """Hunt for the dataset root beneath a mount point.
+
+    Breadth-first, so the shallowest genuine root wins rather than whichever the walk
+    happens to reach first.
+
+    :param search_root: Directory to search, typically ``/kaggle/input``.
+    :param max_depth: Levels to descend before giving up.
+    :return: ``(root or None, directories inspected)`` - the second is for the error
+        message, because "not found" is only actionable if it says where it looked.
+    """
+    search_root = Path(search_root)
+    inspected: List[Path] = []
+    if not search_root.is_dir():
+        return None, inspected
+
+    frontier = [search_root]
+    for _ in range(max_depth + 1):
+        if not frontier:
+            break
+        next_frontier: List[Path] = []
+        for candidate in frontier:
+            inspected.append(candidate)
+            if is_dataset_root(candidate):
+                return candidate, inspected
+            for child in _subdirs(candidate):
+                if child.name not in _PRUNE_DIRS and _class_key(child.name) not in _CLASS_KEYS:
+                    next_frontier.append(child)
+        frontier = next_frontier
+
+    return None, inspected
+
+
+def find_external_root(search_root: Path, max_depth: int = MAX_SEARCH_DEPTH) -> Optional[Path]:
+    """Locate the Figshare external set, which is ``.mat`` files rather than folders.
+
+    :param search_root: Directory to search.
+    :param max_depth: Levels to descend before giving up.
+    :return: The shallowest directory containing ``.mat`` files, or ``None``.
+    """
+    search_root = Path(search_root)
+    if not search_root.is_dir():
+        return None
+
+    frontier = [search_root]
+    for _ in range(max_depth + 1):
+        if not frontier:
+            break
+        next_frontier: List[Path] = []
+        for candidate in frontier:
+            try:
+                if any(child.suffix.lower() == ".mat" for child in candidate.iterdir()):
+                    return candidate
+            except OSError:
+                continue
+            next_frontier.extend(c for c in _subdirs(candidate) if c.name not in _PRUNE_DIRS)
+        frontier = next_frontier
+
+    return None
+
+
+def link_dataset(source: Path, target: Path) -> str:
+    """Point ``target`` at ``source`` without copying thousands of images.
+
+    :param source: The discovered dataset root.
+    :param target: Where the loader expects it, e.g. ``data/raw/bt_mri``.
+    :return: ``kept``, ``linked`` or ``copied``.
+    :raises RuntimeError: If ``target`` holds unrelated content that must not be replaced.
+    """
+    source, target = Path(source), Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if target.is_symlink():
+        if target.resolve() == source.resolve():
+            return "kept"
+        target.unlink()
+    elif target.is_dir():
+        if is_dataset_root(target):
+            return "kept"
+        if any(target.iterdir()):
+            raise RuntimeError(
+                f"{target} already exists, is not a dataset root, and is not empty. "
+                "Refusing to replace it - inspect it and remove it by hand."
+            )
+        # A failed download leaves an empty directory behind. Left in place it silently
+        # blocks the link, and every stage then fails on a dataset that is not there.
+        target.rmdir()
+
+    try:
+        target.symlink_to(source, target_is_directory=True)
+        return "linked"
+    except (OSError, NotImplementedError):
+        # Windows without developer mode. Copying 7,000 images is wasteful but works.
+        shutil.copytree(source, target)
+        return "copied"
+
+
+def setup_kaggle_data(
+    root: Path, search_root: Path = Path("/kaggle/input")
+) -> Dict[str, Any]:
+    """Discover the attached datasets and link them where the loader expects them.
+
+    :param root: Project root.
+    :param search_root: Mount point to search, typically ``/kaggle/input``.
+    :return: What was found and what was done with it.
+    :raises FileNotFoundError: If the primary dataset is not present.
+    """
+    raw = Path(root) / "data" / "raw"
+    report: Dict[str, Any] = {"search_root": str(search_root)}
+
+    primary, inspected = find_dataset_root(search_root)
+    if primary is None:
+        mounted = [p.name for p in _subdirs(Path(search_root))] or ["nothing"]
+        looked = "\n".join(f"    {p}" for p in inspected[:25]) or "    (nothing to search)"
+        raise FileNotFoundError(
+            f"\nCould not find the 4-class MRI dataset under {search_root}.\n\n"
+            f"Mounted there: {', '.join(mounted)}\n\n"
+            f"Directories inspected (first 25 of {len(inspected)}):\n{looked}\n\n"
+            "A directory qualifies as the dataset root when it contains BOTH:\n"
+            f"    {SPLIT_FOLDERS[0]}/  and  {SPLIT_FOLDERS[1]}/\n"
+            "and each of those holds all four class folders:\n"
+            f"    {', '.join(CLASS_FOLDERS)}\n\n"
+            "On Kaggle, attach it in the right-hand sidebar:\n"
+            "    + Add Input -> Datasets -> search "
+            "'mri-brain-tumor-dataset-4-class-7023-images' -> Add\n"
+            "Elsewhere, run scripts/download_data.sh (or .ps1).\n"
+        )
+
+    report["primary_source"] = str(primary)
+    report["primary_action"] = link_dataset(primary, raw / "bt_mri")
+
+    external = find_external_root(search_root)
+    if external is None:
+        report["external_source"] = None
+        report["external_action"] = "absent (Step 17 will be skipped)"
+    else:
+        report["external_source"] = str(external)
+        report["external_action"] = link_dataset(external, raw / "figshare")
+
+    return report
+
 
 #: Seconds held back from the time budget so the manifest and bundle still get written.
 RESERVE_SECONDS = 480
@@ -183,7 +409,6 @@ class Pipeline:
         # Created on first write, not here: constructing a Pipeline to inspect the graph
         # (--list, the tests) should not leave directories behind.
         self.pipeline_dir = self.log_root / "pipeline"
-        self.console_log = self.pipeline_dir / "pipeline.log"
 
         self.seeds: List[int] = (
             [int(s) for s in args.seeds.split(",")] if args.seeds else self._profile_seeds()
@@ -397,40 +622,78 @@ class Pipeline:
     # -- execution -------------------------------------------------------------------
 
     def preflight(self) -> None:
-        """Fail before the first stage if the dataset is not really there.
+        """Fail before the first stage if the dataset is not really usable.
 
         Every stage reads the same image tree, so a missing dataset does not produce one
         useful error - it produces twenty identical ones, twelve seconds apart, and a
         report that looks like the study collapsed rather than like a setup mistake.
 
-        :raises SystemExit: If ``data/raw/bt_mri`` holds no images.
+        Structure is checked, not just file count, and it is checked with the *loader's*
+        descent limit rather than the search one. A tree the loader cannot reach is as
+        good as absent, and that gap is precisely what let a correctly attached dataset
+        fail with "No images found".
+
+        :raises FileNotFoundError: If the dataset is missing, malformed or out of reach.
         """
         raw = self.root / "data" / "raw" / "bt_mri"
+
+        if not raw.exists():
+            raise FileNotFoundError(
+                f"\nPreflight failed: {raw} does not exist.\n\n"
+                "Every stage reads this tree, so nothing can run.\n"
+                f"  On Kaggle:  python {Path(__file__).name} --setup-data\n"
+                "  Elsewhere:  scripts/download_data.sh (or .ps1)\n"
+                "  Or skip this check with --no-preflight.\n"
+            )
+
+        root, _ = find_dataset_root(raw, max_depth=LOADER_MAX_DEPTH)
+        if root is None:
+            deeper, _ = find_dataset_root(raw, max_depth=MAX_SEARCH_DEPTH)
+            if deeper is not None:
+                raise FileNotFoundError(
+                    f"\nPreflight failed: the dataset under {raw} is nested too deeply.\n\n"
+                    f"Found it at:\n    {deeper}\n"
+                    f"but the loader descends only {LOADER_MAX_DEPTH} levels from "
+                    f"{raw},\nso it will report 'No images found'.\n\n"
+                    "Link the split folders' parent directly:\n"
+                    f"    python {Path(__file__).name} --setup-data\n"
+                )
+            raise FileNotFoundError(
+                f"\nPreflight failed: {raw} is not a dataset root.\n\n"
+                "Expected a directory containing BOTH:\n"
+                f"    {SPLIT_FOLDERS[0]}/  and  {SPLIT_FOLDERS[1]}/\n"
+                "each holding all four class folders:\n"
+                f"    {', '.join(CLASS_FOLDERS)}\n\n"
+                f"Found instead: {[p.name for p in _subdirs(raw)][:10] or 'an empty directory'}\n\n"
+                f"Fix it with:  python {Path(__file__).name} --setup-data\n"
+            )
+
         found = 0
-        if raw.exists():
-            for path in raw.rglob("*"):
+        for split in SPLIT_FOLDERS:
+            for path in (root / split).rglob("*"):
                 if path.suffix.lower() in (".jpg", ".jpeg", ".png"):
                     found += 1
                     if found >= 100:
                         break
+            if found >= 100:
+                break
 
-        if found >= 100:
-            return
+        if found < 100:
+            raise FileNotFoundError(
+                f"\nPreflight failed: {root} has the right folders but only {found} "
+                "images.\nThe dataset looks truncated - re-attach or re-download it.\n"
+            )
 
-        state = "does not exist" if not raw.exists() else f"holds {found} images"
-        raise SystemExit(
-            f"\nPreflight failed: {raw} {state}.\n\n"
-            "Every stage reads this tree, so nothing can run. On Kaggle, attach the\n"
-            "dataset in the right-hand sidebar:\n"
-            "  + Add Input -> Datasets -> mri-brain-tumor-dataset-4-class-7023-images\n"
-            "Elsewhere, run scripts/download_data.sh (or .ps1).\n\n"
-            "If the images live somewhere else, symlink that directory to the path\n"
-            "above. Pass --no-preflight to skip this check.\n"
-        )
+        self.echo(f"Preflight OK: dataset root {root}")
 
     def remaining(self) -> float:
         """:return: Seconds left in the budget, less the archiving reserve."""
         return self.deadline - time.time() - RESERVE_SECONDS
+
+    @property
+    def console_log(self) -> Path:
+        """:return: The pipeline's own log file. Derived, so moving ``pipeline_dir`` works."""
+        return self.pipeline_dir / "pipeline.log"
 
     def echo(self, message: str) -> None:
         """:param message: Line to print and append to the pipeline log."""
@@ -1237,6 +1500,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--until", default=None, help="Stop after this stage.")
     parser.add_argument("--skip", default=None, help="Comma-separated stage ids or groups.")
     parser.add_argument("--list", action="store_true", help="Print the stage graph and exit.")
+    parser.add_argument(
+        "--setup-data",
+        action="store_true",
+        help="Find the attached Kaggle datasets, link them into data/raw/, and exit.",
+    )
+    parser.add_argument(
+        "--input-root",
+        default="/kaggle/input",
+        help="Where --setup-data looks for attached datasets.",
+    )
 
     parser.add_argument("--force", action="store_true", help="Re-run stages already marked done.")
     parser.add_argument(
@@ -1320,6 +1593,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     :return: Process exit code.
     """
     args = parse_args(argv)
+
+    if args.setup_data:
+        report = setup_kaggle_data(ROOT, Path(args.input_root))
+        for key, value in report.items():
+            print(f"  {key:<18} {value}")
+        print("\nData ready.")
+        return 0
 
     if args.restore_from:
         restore_state(Path(args.restore_from).resolve(), ROOT)

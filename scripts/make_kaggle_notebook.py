@@ -206,85 +206,51 @@ print("pennylane TorchLayer fwd+bwd: ok")
 
 md("""## 5 · Wire up the data
 
-The datamodule wants `data/raw/bt_mri/**/{Training,Testing}/<class>/` and, for Step 17,
-`.mat` files under `data/raw/figshare/`. Attached Kaggle inputs are symlinked into place —
-no copying, no disk cost. If nothing is attached and Internet is on, they are downloaded
-instead.""")
+The loader expects the dataset root — the directory holding `Training/` and `Testing/` —
+at `data/raw/bt_mri`, and `.mat` files at `data/raw/figshare` for Step 17.
+
+Kaggle does not mount datasets at a predictable depth. Some accounts get
+`/kaggle/input/<slug>/`, others `/kaggle/input/datasets/<owner>/<slug>/`, and this archive
+then nests `BT-MRI Dataset/BT-MRI Dataset/` inside that. So the search is recursive and
+looks for the *structure* — both split folders, each holding all four classes — rather
+than any fixed path. It links the split folders' parent, so the loader finds them
+immediately.
+
+Nothing is copied; a symlink costs no disk. If the dataset is missing this cell raises,
+which stops Run All.""")
 
 code(r'''
-import os, subprocess
+import subprocess, sys
+
+# One implementation, in scripts/kaggle_pipeline.py, covered by tests/test_kaggle_pipeline.py.
+# Duplicating the search here is how the two drift apart.
+result = subprocess.run(
+    [sys.executable, "scripts/kaggle_pipeline.py", "--setup-data"],
+    capture_output=True, text=True,
+)
+print(result.stdout)
+
+if result.returncode != 0:
+    print(result.stderr)
+    # A real exception, not SystemExit: IPython treats SystemExit as a clean exit and
+    # Run All would carry on into twenty stages that each fail on missing data.
+    raise RuntimeError("Dataset setup failed - see the message above.")
+''')
+
+code(r'''
+# Independent confirmation: count what the loader will actually see.
 from pathlib import Path
 
-RAW = Path(PROJECT, "data", "raw")
-RAW.mkdir(parents=True, exist_ok=True)
-INPUT = Path("/kaggle/input")
+root = Path(PROJECT, "data", "raw", "bt_mri")
+counts = {
+    split: sum(1 for _ in (root / split).rglob("*.jpg"))
+    for split in ("Training", "Testing")
+    if (root / split).is_dir()
+}
+print(f"{root} ->", counts, "total", sum(counts.values()))
 
-
-def find_primary():
-    """A directory holding both Training/ and Testing/ somewhere beneath it."""
-    for base in sorted(INPUT.glob("*")) if INPUT.is_dir() else []:
-        for training in list(base.rglob("Training"))[:8]:
-            if training.is_dir() and (training.parent / "Testing").is_dir():
-                return base
-    return None
-
-
-def find_figshare():
-    for base in sorted(INPUT.glob("*")) if INPUT.is_dir() else []:
-        if next(base.rglob("*.mat"), None) is not None:
-            return base
-    return None
-
-
-def link(source, name):
-    """Point data/raw/<name> at an attached input, replacing an empty leftover."""
-    target = RAW / name
-    if target.is_symlink():
-        target.unlink()
-    elif target.is_dir() and not any(target.iterdir()):
-        # A failed download leaves the directory behind. Left in place it silently
-        # blocks the symlink, and every stage then fails on an empty dataset.
-        target.rmdir()
-    elif target.exists():
-        print(f"{name}: already present at {target}")
-        return
-    target.symlink_to(source, target_is_directory=True)
-    print(f"{name}: linked -> {source}")
-
-
-primary, figshare = find_primary(), find_figshare()
-
-print("Attached inputs:", [p.name for p in sorted(INPUT.glob("*"))] or "NONE")
-
-if primary:
-    link(primary, "bt_mri")
-else:
-    print("Primary dataset not attached; trying to download it instead.")
-    subprocess.run(["bash", "scripts/download_data.sh"])
-
-if figshare:
-    link(figshare, "figshare")
-else:
-    print("Figshare not attached -- Step 17 will be skipped unless it downloads below.")
-    subprocess.run(["kaggle", "datasets", "download", "-d",
-                    "ashkhagan/figshare-brain-tumor-dataset",
-                    "-p", str(RAW / "figshare"), "--unzip"], check=False)
-
-# Verify, do not assume. Every later stage depends on this one directory, so a wrong
-# answer here costs a whole session: the pipeline would run 20-odd stages that each
-# fail on missing data. Raise a real exception -- SystemExit is treated as a clean
-# exit by IPython and Run All would carry on regardless.
-n_images = sum(1 for _ in (RAW / "bt_mri").rglob("*.jpg")) if (RAW / "bt_mri").exists() else 0
-print(f"\n{n_images} jpg files visible under data/raw/bt_mri")
-
-if n_images < 1000:
-    raise RuntimeError(
-        f"Expected ~7000 images under data/raw/bt_mri, found {n_images}.\n"
-        "The dataset is not attached. In the right-hand sidebar:\n"
-        "  + Add Input -> Datasets -> search "
-        "'mri-brain-tumor-dataset-4-class-7023-images' -> Add\n"
-        f"Currently attached: {[p.name for p in sorted(INPUT.glob('*'))] or 'nothing'}"
-    )
+if sum(counts.values()) < 1000:
+    raise RuntimeError(f"Expected ~7023 images, found {sum(counts.values())}.")
 print("Data OK.")
 ''')
 
