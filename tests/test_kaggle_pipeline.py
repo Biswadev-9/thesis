@@ -12,6 +12,8 @@ selectors, and Lightning's ``max_time`` format.
 """
 
 import importlib.util
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -533,8 +535,234 @@ def test_linking_keeps_a_directory_that_is_already_correct(tmp_path):
     marker = target / "Training" / "Glioma" / "keep_me.jpg"
     marker.write_bytes(b"")
 
-    assert kp.setup_kaggle_data(project, mount)["primary_action"] == "kept"
+    assert kp.setup_kaggle_data(project, mount)["primary_action"] == "already_present"
     assert marker.is_file(), "an already-correct directory must survive untouched"
+
+
+def test_a_normally_downloaded_dataset_is_kept_despite_its_nesting(tmp_path):
+    """download_data.sh leaves the archive's own doubly-nested folder in place.
+
+    The loader descends into it without complaint, so setup must too. Requiring
+    Training/ at the top level would condemn a valid local dataset as junk and tell the
+    user to delete it.
+    """
+    mount, _ = _make_kaggle_mount(tmp_path)
+    project = tmp_path / "project"
+
+    target = project / "data" / "raw" / "bt_mri"
+    nested = target / "BT-MRI Dataset" / "BT-MRI Dataset"
+    nested.mkdir(parents=True)
+    _make_dataset(nested)
+
+    assert kp.setup_kaggle_data(project, mount)["primary_action"] == "already_present"
+    assert kp.is_dataset_root(nested), "the existing download must survive untouched"
+
+
+def _supports_symlinks(tmp_path):
+    """:param tmp_path: A writable directory.
+
+    :return: Whether this platform lets the test process create symlinks.
+    """
+    probe, destination = tmp_path / "probe_link", tmp_path / "probe_dir"
+    destination.mkdir(exist_ok=True)
+    try:
+        probe.symlink_to(destination, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        return False
+    probe.unlink()
+    return True
+
+
+def test_setup_is_idempotent(tmp_path):
+    """``--setup-data`` runs on every session, including resumed ones.
+
+    The second call previously died: the guard chain fell through to ``symlink_to`` on
+    an existing path, and the resulting FileExistsError - itself an OSError - was caught
+    by the copy fallback, which then failed the same way.
+    """
+    mount, expected = _make_kaggle_mount(tmp_path)
+    project = tmp_path / "project"
+
+    first = kp.setup_kaggle_data(project, mount)
+    second = kp.setup_kaggle_data(project, mount)
+    third = kp.setup_kaggle_data(project, mount)
+
+    assert first["primary_action"] in ("linked", "copied")
+    assert second["primary_action"] in ("already_linked", "already_present")
+    assert second["primary_action"] == third["primary_action"]
+
+    linked = project / "data" / "raw" / "bt_mri"
+    assert kp.is_dataset_root(linked), "the dataset must still be reachable afterwards"
+    assert Path(third["primary_source"]) == expected
+
+
+def test_linking_a_missing_target_creates_the_link(tmp_path):
+    """Case 1: nothing there yet."""
+    source = _make_dataset(tmp_path / "source")
+    target = tmp_path / "project" / "data" / "raw" / "bt_mri"
+
+    assert kp.link_dataset(source, target) in ("linked", "copied")
+    assert kp.is_dataset_root(target)
+
+
+def test_linking_leaves_a_correct_symlink_alone(tmp_path):
+    """Case 2: already pointing where it should - do not churn it."""
+    if not _supports_symlinks(tmp_path):
+        pytest.skip("this platform does not allow symlink creation")
+
+    source = _make_dataset(tmp_path / "source")
+    target = tmp_path / "bt_mri"
+    target.symlink_to(source, target_is_directory=True)
+    before = os.readlink(target)
+
+    assert kp.link_dataset(source, target) == "already_linked"
+    assert target.is_symlink(), "the link must not have been recreated"
+    assert os.readlink(target) == before
+
+
+def test_linking_repoints_a_symlink_aimed_at_the_wrong_place(tmp_path):
+    """Case 3: an old link from a previous session must be replaced, not the dataset."""
+    if not _supports_symlinks(tmp_path):
+        pytest.skip("this platform does not allow symlink creation")
+
+    stale = _make_dataset(tmp_path / "stale")
+    source = _make_dataset(tmp_path / "source")
+    target = tmp_path / "bt_mri"
+    target.symlink_to(stale, target_is_directory=True)
+
+    assert kp.link_dataset(source, target) == "relinked"
+    assert os.path.realpath(target) == os.path.realpath(source)
+    assert kp.is_dataset_root(stale), "only the link is removed, never a dataset"
+
+
+def test_linking_replaces_a_broken_symlink(tmp_path):
+    """A dangling link is invisible to exists() but still occupies the path."""
+    if not _supports_symlinks(tmp_path):
+        pytest.skip("this platform does not allow symlink creation")
+
+    source = _make_dataset(tmp_path / "source")
+    target = tmp_path / "bt_mri"
+    target.symlink_to(tmp_path / "gone", target_is_directory=True)
+    assert not target.exists() and target.is_symlink()
+
+    assert kp.link_dataset(source, target) == "relinked"
+    assert kp.is_dataset_root(target)
+
+
+def test_linking_refuses_a_target_that_is_a_file(tmp_path):
+    """Neither a directory nor a link: the case that used to fall through."""
+    source = _make_dataset(tmp_path / "source")
+    target = tmp_path / "bt_mri"
+    target.write_text("not a dataset")
+
+    with pytest.raises(RuntimeError, match="neither a directory nor a symlink"):
+        kp.link_dataset(source, target)
+    assert target.read_text() == "not a dataset"
+
+
+def test_copy_fallback_never_runs_onto_an_existing_target(tmp_path, monkeypatch):
+    """The core defect: FileExistsError is an OSError, so the copy fallback caught it.
+
+    ``copytree`` was then handed a target that still existed and failed the same way,
+    burying the real problem under a second traceback. A refusal to link must never be
+    retried as a copy over live content.
+    """
+    source = _make_dataset(tmp_path / "source")
+    target = tmp_path / "bt_mri"  # absent on entry, so the guard does not fire
+
+    def occupy_then_fail(self, *args, **kwargs):
+        """Stand in for a target that exists by the time the link is attempted."""
+        self.mkdir()
+        raise FileExistsError(17, "File exists")
+
+    monkeypatch.setattr(Path, "symlink_to", occupy_then_fail)
+    monkeypatch.setattr(
+        shutil, "copytree", lambda *a, **k: pytest.fail("copytree ran on a live target")
+    )
+
+    with pytest.raises(RuntimeError, match="not safe"):
+        kp._create_link(source, target)
+
+
+def _fake_symlink(monkeypatch, link: Path, destination: Path):
+    """Make ``link`` behave like a symlink to ``destination`` without OS privileges.
+
+    Windows refuses symlink creation without developer mode, so the three tests above
+    skip there - and those are precisely the cases that fire on Kaggle. This substitutes
+    for them by faking only the four primitives ``link_dataset`` inspects, and only for
+    this one path; every other path falls through to the real implementation. It proves
+    which branch is taken, which is where the bug was, not what the OS does with links.
+
+    :param monkeypatch: Pytest's patcher.
+    :param link: The path to present as a symlink.
+    :param destination: Where it appears to point.
+    :return: A list that records ``("unlink" | "symlink_to", path)`` calls.
+    """
+    calls = []
+    real_symlink, real_unlink = Path.symlink_to, Path.unlink
+    real_lexists, real_realpath = os.path.lexists, os.path.realpath
+    state = {"exists": True}
+
+    monkeypatch.setattr(
+        os.path, "lexists", lambda p: state["exists"] if Path(p) == link else real_lexists(p)
+    )
+    monkeypatch.setattr(
+        os.path,
+        "realpath",
+        lambda p, **kw: str(destination) if Path(p) == link else real_realpath(p, **kw),
+    )
+    monkeypatch.setattr(Path, "is_symlink", lambda self: self == link)
+
+    def unlink(self, *args, **kwargs):
+        if self == link:
+            calls.append(("unlink", self))
+            state["exists"] = False
+            return None
+        return real_unlink(self, *args, **kwargs)
+
+    def symlink_to(self, target, target_is_directory=False):
+        if self == link:
+            calls.append(("symlink_to", Path(target)))
+            state["exists"] = True
+            return None
+        return real_symlink(self, target, target_is_directory)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(Path, "symlink_to", symlink_to)
+    return calls
+
+
+def test_a_correct_link_is_left_untouched_on_any_platform(tmp_path, monkeypatch):
+    """Case 2 without needing symlink privileges: nothing is unlinked or recreated."""
+    source = _make_dataset(tmp_path / "source")
+    link = tmp_path / "bt_mri"
+    calls = _fake_symlink(monkeypatch, link, source)
+
+    assert kp.link_dataset(source, link) == "already_linked"
+    assert calls == [], "an already-correct link must not be churned"
+
+
+def test_a_wrong_link_is_unlinked_then_recreated_on_any_platform(tmp_path, monkeypatch):
+    """Case 3 without needing symlink privileges: the link goes, the dataset stays."""
+    stale = _make_dataset(tmp_path / "stale")
+    source = _make_dataset(tmp_path / "source")
+    link = tmp_path / "bt_mri"
+    calls = _fake_symlink(monkeypatch, link, stale)
+
+    assert kp.link_dataset(source, link) == "relinked"
+    assert calls == [("unlink", link), ("symlink_to", source)]
+    assert kp.is_dataset_root(stale), "only the link is removed, never a dataset"
+
+
+def test_create_link_never_overwrites_an_existing_path(tmp_path):
+    """The guard in front of the link, independent of what the platform supports."""
+    source = _make_dataset(tmp_path / "source")
+    target = tmp_path / "bt_mri"
+    target.mkdir()
+
+    with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+        kp._create_link(source, target)
+    assert target.is_dir()
 
 
 def test_linking_refuses_to_destroy_unrelated_content(tmp_path):

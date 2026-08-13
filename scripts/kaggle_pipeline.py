@@ -256,24 +256,72 @@ def find_external_root(search_root: Path, max_depth: int = MAX_SEARCH_DEPTH) -> 
     return None
 
 
+def _create_link(source: Path, target: Path) -> str:
+    """Create ``target`` as a link to ``source``. ``target`` must not exist.
+
+    :param source: The dataset root to point at.
+    :param target: Path to create.
+    :return: ``linked``, or ``copied`` where the platform has no usable symlinks.
+    :raises RuntimeError: If ``target`` exists, or neither linking nor copying works.
+    """
+    if os.path.lexists(target):
+        raise RuntimeError(f"Refusing to overwrite {target}: it still exists.")
+
+    try:
+        target.symlink_to(source, target_is_directory=True)
+        return "linked"
+    except (OSError, NotImplementedError) as error:
+        # Windows without developer mode is the case this fallback exists for. Copying
+        # 7,000 images is wasteful but works. Anything else - a target that reappeared,
+        # a read-only parent - must surface rather than be retried as a copy, because
+        # FileExistsError is itself an OSError and copytree would only fail again.
+        if os.path.lexists(target):
+            raise RuntimeError(
+                f"Could not link {target} -> {source}: {error}. The path exists, so "
+                "copying over it is not safe either. Inspect and remove it by hand."
+            ) from error
+        shutil.copytree(source, target)
+        return "copied"
+
+
 def link_dataset(source: Path, target: Path) -> str:
     """Point ``target`` at ``source`` without copying thousands of images.
 
+    Idempotent by design: ``--setup-data`` is re-run every session, and on a resumed
+    session the link is usually already there. Every state the target can be in is
+    handled explicitly, because the fall-through was reached in practice and produced a
+    ``FileExistsError`` from ``symlink_to`` followed by a second one from ``copytree``.
+
     :param source: The discovered dataset root.
     :param target: Where the loader expects it, e.g. ``data/raw/bt_mri``.
-    :return: ``kept``, ``linked`` or ``copied``.
-    :raises RuntimeError: If ``target`` holds unrelated content that must not be replaced.
+    :return: ``already_linked``, ``already_present``, ``linked``, ``relinked`` or
+        ``copied``.
+    :raises RuntimeError: If ``target`` holds content that must not be replaced.
     """
     source, target = Path(source), Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    # lexists, not exists: a broken symlink is invisible to exists() but still occupies
+    # the path, and symlink_to would fail on it.
+    if not os.path.lexists(target):
+        return _create_link(source, target)
+
+    # Checked before is_dir(), which follows symlinks and would misclassify a link to a
+    # directory as a directory.
     if target.is_symlink():
-        if target.resolve() == source.resolve():
-            return "kept"
+        if os.path.realpath(target) == os.path.realpath(source):
+            return "already_linked"
+        # Removes the link itself. The dataset it points at is never touched.
         target.unlink()
-    elif target.is_dir():
-        if is_dataset_root(target):
-            return "kept"
+        return "relinked" if _create_link(source, target) == "linked" else "copied"
+
+    if target.is_dir():
+        # Reachable by the loader, not necessarily the root itself: a normal
+        # download_data.sh run leaves the archive's own BT-MRI Dataset/BT-MRI Dataset/
+        # nesting in place, which the loader descends happily. Demanding Training/ at the
+        # top would condemn a perfectly good dataset as "not a dataset root".
+        if find_dataset_root(target, max_depth=LOADER_MAX_DEPTH)[0] is not None:
+            return "already_present"
         if any(target.iterdir()):
             raise RuntimeError(
                 f"{target} already exists, is not a dataset root, and is not empty. "
@@ -282,14 +330,12 @@ def link_dataset(source: Path, target: Path) -> str:
         # A failed download leaves an empty directory behind. Left in place it silently
         # blocks the link, and every stage then fails on a dataset that is not there.
         target.rmdir()
+        return _create_link(source, target)
 
-    try:
-        target.symlink_to(source, target_is_directory=True)
-        return "linked"
-    except (OSError, NotImplementedError):
-        # Windows without developer mode. Copying 7,000 images is wasteful but works.
-        shutil.copytree(source, target)
-        return "copied"
+    raise RuntimeError(
+        f"{target} exists but is neither a directory nor a symlink. Expected the "
+        "dataset root to live there; remove it by hand and re-run."
+    )
 
 
 def setup_kaggle_data(
