@@ -1,0 +1,38 @@
+# Step 13, fusion baseline 3: one softmax weight per BRANCH per image.
+# This is the variant that answers 'report the learned fusion weights' directly - its
+# three weights read as how much the model trusts each branch for a given image.
+# Note it fuses by weighted sum, so its classifier sees one branch's width, not three.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.feature_fusion_module.FeatureFusionModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  # Higher than the branches': this head is small and trains from scratch on frozen
+  # features, so it is not fine-tuning a pretrained backbone.
+  lr: 1e-3
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.fusion.GatedFusion
+  # Widths are read from the feature cache at runtime; these are the expected defaults.
+  classical_dim: 1280
+  spatial_dim: 32
+  quantum_dim: 4
+  proj_dim: 64
+  hidden_dim: 128
+  num_classes: 4
+  dropout: 0.3
+  gate_hidden: 32
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+compile: false

@@ -1,0 +1,81 @@
+# @package _global_
+
+# Caches the frozen tri-branch features that Steps 13-15 and 20 train over.
+#
+#   python src/extract_features.py \
+#       classical_ckpt=logs/train/runs/<step10 run> \
+#       quantum_ckpt=logs/train/runs/<step12 run>
+#
+# Writes data/features/<tag>/{train,val,test}.pt plus a manifest recording which
+# checkpoints produced them. Re-run whenever either branch is retrained - a stale cache
+# would silently train the fusion head on the wrong features.
+#
+# NOTE: the spatial features come from inside the Step 12 model, which carries its own
+# spatial-gate branch trained jointly with the quantum mixture. The separately trained
+# Step 11 checkpoint is used only for the arm ablation and gate-morphology analysis.
+# See src/extract_features.py and docs/DEVIATIONS.md.
+
+defaults:
+  - _self_
+  - data: bt_mri
+  - paths: default
+  - extras: default
+  - hydra: default
+  - optional local: default
+
+task_name: "extract_features"
+tags: ["features"]
+
+# Name of the cache directory under data/features/. Change it when extracting from a
+# different recipe or different branch checkpoints, so caches cannot be confused.
+tag: default
+
+# Trained branch checkpoints - a run directory or a .ckpt file. Both required.
+classical_ckpt: null
+quantum_ckpt: null
+
+# Architectures used to rebuild each module before loading its weights. Must match the
+# configs the branches were trained with.
+classical_model:
+  _target_: src.models.mri_classification_module.MRIClassificationModule
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 1e-4
+  net:
+    _target_: src.models.components.transfer.TransferBackbone
+    arch: efficientnet_b0
+    num_classes: 4
+    weights: null # weights come from the checkpoint, not from ImageNet
+    freeze_backbone: true
+    dropout: 0.3
+  num_classes: 4
+
+quantum_model:
+  _target_: src.models.mri_classification_module.MRIClassificationModule
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 1e-4
+  net:
+    _target_: src.models.components.quantum.AdaptiveQuantumClassifier
+    channels: 32
+    num_classes: 4
+    n_qubits: 4
+    circuit_names: null
+    hidden_dims: [128, 64]
+    dropout: 0.3
+  num_classes: 4
+
+splits: ["train", "val", "test"]
+
+# The extraction pass itself; the branches are frozen so this is inference only.
+accelerator: auto
+
+seed: 42
+
+# Augmentation OFF: cached features must be deterministic, or every fusion head would
+# train on a different random view of the same image and the cache would be meaningless.
+data:
+  augment: false
+  use_weighted_sampler: false

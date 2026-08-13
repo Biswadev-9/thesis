@@ -1,0 +1,27 @@
+# @package _global_
+#
+# Step 15: train the final model under the fixed protocol, across three seeds.
+#
+#   "Run at least three seeds for the final model and major baselines."
+#
+#   python src/train.py -m experiment=step15_final_protocol seed=42,123,7
+#
+# Set the loss to whatever Step 14 selected before running this:
+#
+#   python src/train.py -m experiment=step15_final_protocol seed=42,123,7 \
+#       loss@model.criterion=weighted_ce
+#
+# Nothing about the protocol may change after this point. Step 16 evaluates the resulting
+# checkpoint on the internal test set exactly once.
+
+defaults:
+  - override /data: bt_mri_features
+  - override /model: final_classifier
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step15", "final-model"]
+
+data:
+  tag: default

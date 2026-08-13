@@ -4,8 +4,12 @@
 # order of defaults determines the order in which configs override each other
 defaults:
   - _self_
-  - data: mnist
-  - model: mnist
+  # The template's mnist pair is gone - `configs/data/mnist.yaml` no longer exists, and a
+  # 784-input head cannot take a 224x224x3 scan. The defaults are the study's datamodule
+  # and its smallest model, so a bare `python src/train.py` runs. Every experiment config
+  # overrides both.
+  - data: bt_mri
+  - model: baseline_simple_cnn
   - callbacks: default
   - logger: null # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
   - trainer: default

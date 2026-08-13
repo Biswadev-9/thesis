@@ -1,0 +1,28 @@
+# Step 14: "Loss: class-weighted cross-entropy or focal loss based on validation results."
+#
+#   python src/analyze.py analysis=step14_loss_selection
+#
+# Only weighted CE and focal are SELECTABLE. Plain CE is trained as a reference row but
+# cannot win - the reference notebook chose it, and chose it by comparing test scores.
+#
+# The tie-break is fixed in advance and never reads test data:
+#   validation macro-F1 -> validation balanced accuracy -> lower validation ECE
+#
+# See docs/DEVIATIONS.md (F7).
+
+_target_: src.analysis.loss_selection.LossSelection
+
+name: step14_loss_selection
+
+tag: default
+
+# null trains the two selectable candidates plus plain CE as reference.
+candidates: null
+
+epochs: 25
+lr: 1e-3
+dropout: 0.4
+focal_gamma: 2.0
+
+seed: ${seed}
+accelerator: auto

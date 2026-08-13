@@ -1,0 +1,20 @@
+_target_: src.data.bt_mri_feature_datamodule.BTMRIFeatureDataModule
+
+data_dir: ${paths.data_dir}
+
+# Cache name under data/features/. Must match the tag used with src/extract_features.py.
+tag: default
+
+# Branches replaced with zeros - any of classical, spatial, quantum. This is how the
+# Step 13 contribution ablation and Step 20's no-quantum control are expressed: the
+# architecture, parameter count and protocol stay identical, so the measured drop is
+# attributable to the branch's information rather than to a smaller model.
+zero_branches: null
+
+batch_size: 32
+
+# Features are already tensors in memory; workers only add overhead.
+num_workers: 0
+pin_memory: false
+
+use_weighted_sampler: true

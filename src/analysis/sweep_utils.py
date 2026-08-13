@@ -178,3 +178,110 @@ def run_proxy_trial(
         torch.cuda.empty_cache()
 
     return metrics
+
+
+@torch.no_grad()
+def collect_feature_predictions(
+    module: Any, dataloader: Any, device: torch.device
+) -> Dict[str, np.ndarray]:
+    """Run a fusion head over cached features and gather predictions.
+
+    :param module: Trained fusion module.
+    :param dataloader: Loader yielding ``(classical, spatial, quantum, labels)``.
+    :param device: Device to run on.
+    :return: ``{"y_true", "y_pred", "y_prob"}`` as numpy arrays.
+    """
+    module = module.to(device).eval()
+
+    predictions: List[np.ndarray] = []
+    targets: List[np.ndarray] = []
+    probabilities: List[np.ndarray] = []
+
+    for classical, spatial, quantum, labels in dataloader:
+        logits = module(classical.to(device), spatial.to(device), quantum.to(device))
+        probs = torch.softmax(logits, dim=1)
+        predictions.append(logits.argmax(dim=1).cpu().numpy())
+        probabilities.append(probs.cpu().numpy())
+        targets.append(labels.numpy())
+
+    return {
+        "y_true": np.concatenate(targets),
+        "y_pred": np.concatenate(predictions),
+        "y_prob": np.concatenate(probabilities),
+    }
+
+
+def run_feature_trial(
+    datamodule: LightningDataModule,
+    net: nn.Module,
+    criterion: Optional[nn.Module] = None,
+    epochs: int = 20,
+    seed: int = 42,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-4,
+    accelerator: str = "auto",
+    devices: int = 1,
+) -> Dict[str, float]:
+    """Train one fusion head over cached features and score it on **validation**.
+
+    Used by the Step 13 strategy comparison and the Step 14 loss selection. Both are
+    selection studies, so this deliberately never touches the test split - Step 16
+    requires it to stay unseen until the final model is evaluated once.
+
+    Calibration is reported alongside the accuracy metrics because Step 14's tie-break
+    uses it: three losses can reach identical macro-F1 while differing in how honest their
+    confidences are.
+
+    :param datamodule: Configured feature datamodule.
+    :param net: Freshly constructed fusion head; must not be reused across trials.
+    :param criterion: Loss module, or ``None`` for unweighted cross-entropy.
+    :param epochs: Training epochs.
+    :param seed: Seed applied before construction.
+    :param lr: Learning rate.
+    :param weight_decay: Weight decay.
+    :param accelerator: Lightning accelerator.
+    :param devices: Device count.
+    :return: Validation metrics, including ``ece`` and ``best_val_f1``.
+    """
+    from src.models.feature_fusion_module import FeatureFusionModule
+    from src.utils.metrics import expected_calibration_error
+
+    seed_everything(seed, workers=True)
+
+    module = FeatureFusionModule(
+        net=net,
+        optimizer=_optimizer_factory(lr, weight_decay),
+        scheduler=_scheduler_factory(epochs),
+        criterion=criterion,
+        num_classes=datamodule.num_classes,
+        class_names=datamodule.class_names,
+    )
+
+    trainer = Trainer(
+        max_epochs=epochs,
+        accelerator=accelerator,
+        devices=devices,
+        logger=False,
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+    )
+    trainer.fit(model=module, datamodule=datamodule)
+
+    best_val_f1 = float(module.val_f1_best.compute())
+
+    outputs = collect_feature_predictions(module, datamodule.val_dataloader(), module.device)
+    metrics = classification_summary(
+        outputs["y_true"], outputs["y_pred"], datamodule.class_names
+    )
+    metrics["best_val_f1"] = best_val_f1
+    metrics["ece"], _ = expected_calibration_error(outputs["y_true"], outputs["y_prob"])
+    metrics["trainable_parameters"] = int(
+        sum(p.numel() for p in net.parameters() if p.requires_grad)
+    )
+
+    del module, trainer
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return metrics

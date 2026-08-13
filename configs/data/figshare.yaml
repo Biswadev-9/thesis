@@ -1,0 +1,13 @@
+_target_: src.data.eval_datamodules.FigshareDataModule
+
+data_dir: ${paths.data_dir}
+raw_subdir: raw/figshare
+
+# Must match what the model was trained at, or the domain-shift measurement is confounded
+# by a pipeline difference.
+image_size: 224
+normalize: imagenet
+
+batch_size: 32
+num_workers: 0
+pin_memory: false

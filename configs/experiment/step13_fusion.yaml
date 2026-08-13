@@ -1,0 +1,32 @@
+# @package _global_
+#
+# Step 13: compare the three fusion strategies.
+#
+#   "Simple concatenation should be used as the first fusion baseline. Then add
+#    attention-based or gated fusion only if it improves validation performance."
+#
+# Extract the features once, then sweep the strategies:
+#
+#   python src/extract_features.py classical_ckpt=<step10 run> quantum_ckpt=<step12 run>
+#   python src/train.py -m experiment=step13_fusion \
+#       model=fusion_concat,fusion_se,fusion_gated seed=42,123,7
+#
+# Branch-contribution ablation - identical architecture, one branch zeroed at input:
+#
+#   python src/train.py -m experiment=step13_fusion model=fusion_gated \
+#       'data.zero_branches=[classical]','data.zero_branches=[spatial]','data.zero_branches=[quantum]'
+#
+# Compare on VALIDATION macro-F1. The test set stays sealed until Step 16.
+
+defaults:
+  - override /data: bt_mri_features
+  - override /model: fusion_concat
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step13", "fusion"]
+
+data:
+  tag: default
+  zero_branches: null

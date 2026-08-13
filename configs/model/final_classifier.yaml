@@ -1,0 +1,40 @@
+# Step 14: the final classifier - the study's proposed model.
+#
+# "The final classifier should be simple enough to avoid overfitting. Use fully connected
+#  layers with normalization, dropout, and a final SoftMax layer for four classes."
+#
+# Structurally this is ConcatFusion with a deeper, normalised head. Step 13 chooses the
+# fusion strategy; this replaces the head; Step 15 trains it under the fixed protocol
+# across three seeds.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.feature_fusion_module.FeatureFusionModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-3
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.fusion.FusedFeatureClassifier
+  classical_dim: 1280
+  spatial_dim: 32
+  quantum_dim: 4
+  proj_dim: 64
+  # "one or two dense layers with ReLU or GELU activation" (Step 14)
+  hidden_dims: [128, 64]
+  num_classes: 4
+  # Higher than the fusion baselines': this head is deeper, so it needs more regularising.
+  dropout: 0.4
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+compile: false

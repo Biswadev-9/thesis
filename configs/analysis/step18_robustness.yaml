@@ -1,0 +1,129 @@
+# Step 18: robustness under controlled degradation.
+#
+#   python src/analyze.py analysis=step18_robustness \
+#       analysis.models.proposed.classical_ckpt=<step10> \
+#       analysis.models.proposed.quantum_ckpt=<step12> \
+#       analysis.models.proposed.fusion_ckpt=<step15> \
+#       analysis.models.efficientnet_b0.ckpt=<step9 effnet run> \
+#       analysis.models.vit.ckpt=<step9 vit run>
+#
+# Step 18 requires a comparison against "strong CNN and Transformer baselines", so both
+# are configured here rather than being optional.
+#
+# To answer "does diffusion preprocessing improve robustness under noisy inputs", add a
+# second entry differing ONLY in `preprocess` - see `proposed_diffusion` below. The filter
+# runs AFTER the degradation, so it actually sees the noise.
+#
+# NOTE: the archive's pre-degraded "Challenging Datasets" are deliberately unused. Their
+# filenames do not correspond to the primary set, so degraded copies of training images
+# cannot be excluded. See src/analysis/robustness.py.
+
+_target_: src.analysis.robustness.RobustnessStudy
+
+name: step18_robustness
+
+_recursive_: false
+
+models:
+  proposed:
+    kind: pipeline
+    classical_ckpt: null
+    quantum_ckpt: null
+    fusion_ckpt: null
+    preprocess: null
+    classical_model:
+      _target_: src.models.mri_classification_module.MRIClassificationModule
+      optimizer: { _target_: torch.optim.AdamW, _partial_: true, lr: 1e-4 }
+      net:
+        _target_: src.models.components.transfer.TransferBackbone
+        arch: efficientnet_b0
+        num_classes: 4
+        weights: null
+        freeze_backbone: true
+        dropout: 0.3
+      num_classes: 4
+    quantum_model:
+      _target_: src.models.mri_classification_module.MRIClassificationModule
+      optimizer: { _target_: torch.optim.AdamW, _partial_: true, lr: 1e-4 }
+      net:
+        _target_: src.models.components.quantum.AdaptiveQuantumClassifier
+        channels: 32
+        num_classes: 4
+        n_qubits: 4
+        circuit_names: null
+        hidden_dims: [128, 64]
+        dropout: 0.3
+      num_classes: 4
+    fusion_model:
+      _target_: src.models.feature_fusion_module.FeatureFusionModule
+      optimizer: { _target_: torch.optim.AdamW, _partial_: true, lr: 1e-3 }
+      net:
+        _target_: src.models.components.fusion.FusedFeatureClassifier
+        classical_dim: 1280
+        spatial_dim: 32
+        quantum_dim: 4
+        proj_dim: 64
+        hidden_dims: [128, 64]
+        num_classes: 4
+        dropout: 0.4
+      num_classes: 4
+
+  # Step 18: "Compare robustness ... against strong CNN and Transformer baselines."
+  efficientnet_b0:
+    kind: simple
+    ckpt: null
+    preprocess: null
+    model_cfg:
+      _target_: src.models.mri_classification_module.MRIClassificationModule
+      optimizer: { _target_: torch.optim.AdamW, _partial_: true, lr: 1e-4 }
+      net:
+        _target_: src.models.components.transfer.TransferBackbone
+        arch: efficientnet_b0
+        num_classes: 4
+        weights: null
+        freeze_backbone: true
+        dropout: 0.3
+      num_classes: 4
+
+  vit:
+    kind: simple
+    ckpt: null
+    preprocess: null
+    model_cfg:
+      _target_: src.models.mri_classification_module.MRIClassificationModule
+      optimizer: { _target_: torch.optim.AdamW, _partial_: true, lr: 1e-4 }
+      net:
+        _target_: src.models.components.transfer.TransferBackbone
+        arch: vit_b_16
+        num_classes: 4
+        weights: null
+        freeze_backbone: true
+        dropout: 0.3
+      num_classes: 4
+
+  # Uncomment and point at a model trained on the diffusion recipe to answer Step 18's
+  # diffusion question. It must differ from `proposed` ONLY in `preprocess`, or the
+  # comparison measures something else.
+  #
+  # proposed_diffusion:
+  #   kind: pipeline
+  #   preprocess: diffusion_i10_k15
+  #   classical_ckpt: <run trained with data.recipe=diffusion_i10_k15>
+  #   quantum_ckpt: <same>
+  #   fusion_ckpt: <same>
+  #   classical_model: ...   # as above
+  #   quantum_model: ...
+  #   fusion_model: ...
+
+# null sweeps every category: clean, gaussian_noise, contrast_shift, blur, resolution,
+# intensity_shift - three severities each.
+categories: null
+
+image_size: 224
+normalize: imagenet
+batch_size: 32
+
+# Evaluate at most this many batches per condition. null uses the full test split.
+limit_batches: null
+
+accelerator: auto

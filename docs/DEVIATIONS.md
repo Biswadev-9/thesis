@@ -464,6 +464,193 @@ layout rather than the features' separability. The projection is kept for the fi
 
 ---
 
+## Phase 5 — fusion and the final classifier (Steps 13, 14, 15)
+
+### F4b — the feature cache · `done`
+
+Architecture decision D3 from the plan, now built. `src/extract_features.py` runs the
+frozen branches once and writes `data/features/<tag>/{train,val,test}.pt`.
+
+Steps 13, 14, 15 and 20 all train many small heads over the *same* frozen outputs.
+Recomputing them per epoch would re-run EfficientNet-B0 and five quantum circuits every
+time, and the quantum branch is already the slowest component in the study. Extracting
+once removes the CPU simulator from the training loop entirely.
+
+**Augmentation is disabled during extraction.** Cached features must be deterministic;
+with augmentation on, every fusion head would train on a different random view of the same
+image and the cache would silently mean nothing.
+
+### D14 — the spatial features come from the Step 12 model, not the Step 11 checkpoint · notebook
+
+`TriBranchExtractor` reads the 32-d spatial features from *inside* the Step 12
+adaptive-quantum model, which carries its own spatial-gate branch trained jointly with the
+quantum mixture. The separately trained Step 11 checkpoint feeds only the arm ablation and
+the gate-morphology analysis.
+
+Inherited from the reference notebook and preserved deliberately - substituting the Step 11
+weights would change every downstream result. It reads like a bug, so it is documented in
+the extractor's own docstring and asserted in the tests.
+
+### D15 — every fusion strategy projects before fusing · `done`
+
+The branches arrive at 1280, 32 and 4 dimensions. Concatenating them raw would make the
+classical branch 97 % of the fused vector, and any "contribution" measured afterwards would
+largely be measuring width. All three strategies project to a shared 64-d space first, so
+the comparison is about information rather than dimensionality. The notebook does the same;
+recorded because the alternative is an easy and invisible mistake.
+
+Worth noting when reading Step 13's table: **gated fusion fuses by weighted sum**, so its
+classifier sees 64 dimensions where concat and SE see 192. It is therefore the smallest of
+the three heads, and its score should be read with that in mind. Parameter counts are
+reported per strategy for exactly this reason.
+
+### D16 — concatenation is displaced only on evidence · `done`
+
+Step 13: *"Then add attention-based or gated fusion only if it improves validation
+performance."* The selection rule keeps concatenation unless a more complex strategy beats
+it by more than `improvement_threshold` on validation macro-F1. Setting the threshold above
+0 guards against adopting attention or gating on noise.
+
+### F7 — the loss is selected on validation, from the permitted set · `done`
+
+**Specification** Step 14: *"Loss: class-weighted cross-entropy or focal loss based on
+validation results."*
+
+**Notebook** Selected **plain cross-entropy** - which the clause does not permit - and
+selected it by comparing **test** macro-F1 after finding a three-way validation tie
+(0.9897 for all three candidates). It then reported that same test set as the final
+result, which inflates the reported performance and violates Step 16's requirement that
+the test set stay unseen.
+
+**Now** `src/analysis/loss_selection.py` enforces both halves:
+
+- Only `weighted_ce` and `focal` are *selectable*. Plain CE is trained and reported as a
+  reference row - it is useful to know what the imbalance handling buys - but cannot win.
+  A run containing only reference losses raises rather than silently selecting one.
+- The tie-break is fixed in advance and never reads test data: validation macro-F1 →
+  validation balanced accuracy → **lower validation ECE**.
+
+The calibration tie-break is a deliberate choice rather than a coin toss. When two losses
+classify equally well, the better-calibrated one is the more useful model - and the
+notebook's own spot-check found a confidently *wrong* prediction (true Glioma, predicted
+Meningioma at probability 1.000), which is exactly what poor calibration looks like.
+
+Four tests pin this, including that plain CE loses even when it is best on every metric,
+and that a full tie resolves on ECE.
+
+**Consequence**: the selected loss will most likely differ from the notebook's, and
+Step 14's table changes.
+
+### D17 — branch contribution is measured by zeroing, not by removal · `done`
+
+The Step 13 ablation replaces a branch's features with zeros rather than deleting the
+branch and shrinking the head. Architecture, parameter count and training protocol stay
+identical, so the measured drop is attributable to that branch's *information*. Deleting
+the branch instead would confound information with capacity. Step 20 reuses the same
+mechanism for the no-quantum control.
+
+A near-zero or negative contribution is a finding, not a failure: it means the branch
+carries nothing the others do not already supply.
+
+---
+
+## Phase 6 — evaluation (Steps 16, 17, 18)
+
+### F9 — the test set is spent once, and that is enforced · `done`
+
+**Specification** Step 16: *"evaluate the final model **once** on the internal test set.
+The test set should remain unseen during training and hyperparameter tuning."*
+
+**Notebook** Read test metrics while choosing the Step 14 loss, then reported that same
+test set as the final result.
+
+**Now** `src/analysis/internal_test.py` writes a `test_evaluated.lock` beside the fusion
+checkpoint. A second evaluation of the same checkpoint raises, with a message pointing at
+the lock and explaining the two legitimate options. `analysis.force=true` overrides it and
+records `"forced": true` in the lock's history, so a result that is no longer a single-use
+estimate is visible as such rather than indistinguishable from a clean one.
+
+Verified end to end: first run succeeds, second is refused, third with `force` succeeds and
+the lock accumulates both entries.
+
+### D18 — Step 17 reports the restricted *and* unrestricted score · `done`
+
+Figshare has no non-tumour class, so Step 17 permits a three-class external task.
+Restricting the argmax to the three present classes is standard, and it is what the
+notebook did - but it is also a *favourable* choice, because it silently forgives every
+case where the model would have answered "No-tumor".
+
+Both are now reported, along with `predicted_absent_class_count`. A large gap between them
+means the model frequently reaches for a class that cannot be correct here, which is itself
+a finding about transfer. Reporting only the restricted figure would overstate
+generalisation.
+
+The internal-to-external drop is computed against the internal per-class F1 **restricted to
+the same three classes**, so it measures domain shift rather than the absent class.
+
+### D19 — Figshare labels are mapped through class names, not indices · `done`
+
+Figshare encodes 1=meningioma, 2=glioma, 3=pituitary; this project's Step 1 mapping is
+glioma=0, meningioma=1, pituitary=2. Mapping index to index would silently swap glioma and
+meningioma and produce a plausible-looking but meaningless confusion matrix. The mapping
+goes through the canonical class names and is unit-tested.
+
+Figshare scans are 16-bit with varying intensity ranges, so each is min-max normalised to
+8-bit before the shared pipeline. Applying the internal set's fixed normalisation to raw
+16-bit values would inflate the apparent domain shift for a reason unrelated to the model.
+
+### D20 — degradation happens before preprocessing · `done`
+
+Step 18 asks whether diffusion preprocessing "improves robustness under noisy inputs". That
+only means anything if the filter sees the noise, so `DegradedDataset` runs
+**raw → degrade → preprocess → Step 5 transform**. Reading from a pre-materialised recipe
+mirror and degrading afterwards would corrupt an already-denoised image and answer the
+opposite question. It also matches deployment: a noisy scan arrives, the pipeline denoises
+it, the model classifies it.
+
+The notebook could only apply diffusion as a *test-time* filter because it never trained
+with it; with F4 in place this is now a genuine trained-in comparison.
+
+### D21 — noise is deterministic per image, shared across models · `done`
+
+Gaussian noise takes a per-image seed derived from the sample index. Every model in the
+comparison therefore sees the *same* corrupted pixels, and a model cannot look more robust
+by drawing an easier noise sample. Unit-tested in both directions: identical across calls
+for a given index, different between indices.
+
+### D22 — robustness is reported as a drop, not only as a score · `done`
+
+Each condition is reported as absolute macro-F1 and as the drop from that model's **own**
+clean baseline. The drop is the robustness measure: a weaker model that degrades gently is
+more robust than a stronger one that collapses, and absolute scores hide that. Unit-tested
+with exactly that scenario.
+
+### D23 — the shipped "Challenging Datasets" are excluded · `done`
+
+The archive ships `Challenging Datasets/{Blurred,Noisy,Patient Motion Artifact}/`, each
+containing the same four class folders - superficially an ideal real-world robustness set,
+and initially identified as a bonus for Step 18.
+
+**They are not usable.** Their filenames (`bilateral_glioma (1).jpg`) do not correspond to
+the primary set's (`BT-MRI GL Train (1).jpg`), and there are 3,354 of them against 7,023
+originals, so there is no way to determine which are degraded copies of *training* images.
+Evaluating on them could silently score the model on its own training data and inflate the
+robustness result.
+
+The synthetic degradations are applied to the held-out test split only, where provenance is
+known. If the dataset authors publish a filename correspondence, this decision is worth
+revisiting - real acquisition artefacts would be stronger evidence than synthetic ones.
+
+### D24 — no `torch.no_grad` in the full pipeline's forward path · `done`
+
+`FullPipeline` freezes the branches with `requires_grad = False`, which stops their weights
+updating, but deliberately does **not** wrap the forward in `no_grad`. Doing both would also
+block gradients from reaching the input, breaking Phase 7's Grad-CAM - and the failure would
+present as a uniformly blank saliency map rather than as an error. A test asserts gradients
+reach the input pixels and are not identically zero.
+
+---
+
 ## Environment and template repairs
 
 These are not methodological, but they changed files and are recorded for traceability.

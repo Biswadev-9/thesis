@@ -1,0 +1,29 @@
+# @package _global_
+#
+# Step 14: the final classifier, and its loss chosen on validation.
+#
+#   "Loss: class-weighted cross-entropy or focal loss based on validation results."
+#
+#   python src/train.py -m experiment=step14_loss_ablation \
+#       loss@model.criterion=weighted_ce,focal,plain_ce
+#
+# Then apply the selection rule, which reads validation metrics only:
+#
+#   python src/analyze.py analysis=step14_loss_selection
+#
+# The specification restricts the SELECTABLE candidates to weighted CE and focal. Plain CE
+# is trained and reported as a reference row but cannot win - the reference notebook chose
+# it, and chose it by comparing TEST scores, which is a protocol violation.
+# See docs/DEVIATIONS.md (F7).
+
+defaults:
+  - override /data: bt_mri_features
+  - override /model: final_classifier
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step14", "loss-ablation"]
+
+data:
+  tag: default

@@ -1,0 +1,67 @@
+# Step 16: evaluate the final model ONCE on the internal test set.
+#
+#   python src/analyze.py analysis=step16_internal #       analysis.classical_ckpt=logs/train/runs/<step10> #       analysis.quantum_ckpt=logs/train/runs/<step12> #       analysis.fusion_ckpt=logs/train/runs/<step15>
+#
+# Writes a test_evaluated.lock beside the fusion checkpoint. A second run against the same
+# checkpoint is refused unless analysis.force=true - the constraint the reference notebook
+# broke. See docs/DEVIATIONS.md (F9).
+#
+# DO NOT RUN until Steps 6, 8, 13 and 14 are settled and the final model is trained. This
+# is the one evaluation the study cannot repeat.
+
+_target_: src.analysis.internal_test.InternalTest
+
+name: step16_internal
+
+_recursive_: false
+
+classical_ckpt: null
+quantum_ckpt: null
+fusion_ckpt: null
+
+# Architectures used to rebuild each module before loading its weights. Must match the
+# configs the models were trained with.
+classical_model:
+  _target_: src.models.mri_classification_module.MRIClassificationModule
+  optimizer: {_target_: torch.optim.AdamW, _partial_: true, lr: 1e-4}
+  net:
+    _target_: src.models.components.transfer.TransferBackbone
+    arch: efficientnet_b0
+    num_classes: 4
+    weights: null
+    freeze_backbone: true
+    dropout: 0.3
+  num_classes: 4
+
+quantum_model:
+  _target_: src.models.mri_classification_module.MRIClassificationModule
+  optimizer: {_target_: torch.optim.AdamW, _partial_: true, lr: 1e-4}
+  net:
+    _target_: src.models.components.quantum.AdaptiveQuantumClassifier
+    channels: 32
+    num_classes: 4
+    n_qubits: 4
+    circuit_names: null
+    hidden_dims: [128, 64]
+    dropout: 0.3
+  num_classes: 4
+
+fusion_model:
+  _target_: src.models.feature_fusion_module.FeatureFusionModule
+  optimizer: {_target_: torch.optim.AdamW, _partial_: true, lr: 1e-3}
+  net:
+    _target_: src.models.components.fusion.FusedFeatureClassifier
+    classical_dim: 1280
+    spatial_dim: 32
+    quantum_dim: 4
+    proj_dim: 64
+    hidden_dims: [128, 64]
+    num_classes: 4
+    dropout: 0.4
+  num_classes: 4
+
+# Every use of this weakens the "evaluated once" claim, and is recorded in the summary.
+force: false
+
+n_calibration_bins: 10
+accelerator: auto

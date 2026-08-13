@@ -1,0 +1,66 @@
+# Step 17: cross-dataset validation on Figshare, with no retraining.
+#
+#   python src/analyze.py analysis=step17_external data=figshare #       analysis.classical_ckpt=<step10> analysis.quantum_ckpt=<step12> #       analysis.fusion_ckpt=<step15> #       analysis.internal_summary=logs/analyze/runs/<step16>/step16_internal_summary.json
+#
+# Reports BOTH a restricted score (argmax over the three present classes) and an
+# unrestricted one. Restricting is standard for a missing class but is also favourable -
+# it forgives every case the model would have answered No-tumor. The gap between them is
+# reported explicitly.
+
+_target_: src.analysis.external_test.ExternalTest
+
+name: step17_external
+
+_recursive_: false
+
+classical_ckpt: null
+quantum_ckpt: null
+fusion_ckpt: null
+
+# Architectures used to rebuild each module before loading its weights. Must match the
+# configs the models were trained with.
+classical_model:
+  _target_: src.models.mri_classification_module.MRIClassificationModule
+  optimizer: {_target_: torch.optim.AdamW, _partial_: true, lr: 1e-4}
+  net:
+    _target_: src.models.components.transfer.TransferBackbone
+    arch: efficientnet_b0
+    num_classes: 4
+    weights: null
+    freeze_backbone: true
+    dropout: 0.3
+  num_classes: 4
+
+quantum_model:
+  _target_: src.models.mri_classification_module.MRIClassificationModule
+  optimizer: {_target_: torch.optim.AdamW, _partial_: true, lr: 1e-4}
+  net:
+    _target_: src.models.components.quantum.AdaptiveQuantumClassifier
+    channels: 32
+    num_classes: 4
+    n_qubits: 4
+    circuit_names: null
+    hidden_dims: [128, 64]
+    dropout: 0.3
+  num_classes: 4
+
+fusion_model:
+  _target_: src.models.feature_fusion_module.FeatureFusionModule
+  optimizer: {_target_: torch.optim.AdamW, _partial_: true, lr: 1e-3}
+  net:
+    _target_: src.models.components.fusion.FusedFeatureClassifier
+    classical_dim: 1280
+    spatial_dim: 32
+    quantum_dim: 4
+    proj_dim: 64
+    hidden_dims: [128, 64]
+    num_classes: 4
+    dropout: 0.4
+  num_classes: 4
+
+# Step 16's summary JSON, used to compute the internal-to-external drop on the same three
+# classes. Comparing a 3-class score against a 4-class one would conflate domain shift
+# with the missing class.
+internal_summary: null
+
+accelerator: auto

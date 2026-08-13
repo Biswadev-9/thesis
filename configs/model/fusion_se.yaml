@@ -1,0 +1,37 @@
+# Step 13, fusion baseline 2: squeeze-and-excitation attention over the concatenated
+# vector. Its weights are per CHANNEL, so they indicate which feature dimensions matter,
+# not which branch - less directly interpretable than gated fusion.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.feature_fusion_module.FeatureFusionModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  # Higher than the branches': this head is small and trains from scratch on frozen
+  # features, so it is not fine-tuning a pretrained backbone.
+  lr: 1e-3
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.fusion.SEFusion
+  # Widths are read from the feature cache at runtime; these are the expected defaults.
+  classical_dim: 1280
+  spatial_dim: 32
+  quantum_dim: 4
+  proj_dim: 64
+  hidden_dim: 128
+  num_classes: 4
+  dropout: 0.3
+  reduction: 4
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+compile: false
