@@ -262,6 +262,31 @@ def test_max_time_uses_lightnings_format(seconds, expected):
     assert kp._hms(seconds) == expected
 
 
+def test_only_a_full_run_resumes_from_a_checkpoint(tmp_path):
+    """Mid-run resume is for stages measured in hours, not seconds.
+
+    A shortened profile's leftover last.ckpt comes from a run that did not finish, so
+    restoring it reproduces whatever went wrong. Restarting costs seconds.
+    """
+    for profile, expect_resume in (("full", True), ("smoke", False), ("fast", False)):
+        root = tmp_path / profile
+        pipe = _pipeline(profile=profile)
+        pipe.root = root
+        pipe.log_root = root / "logs"
+        pipe.pipeline_dir = root / "logs" / "pipeline"
+
+        stage = next(s for s in kp.build_stages(pipe) if s.is_train)
+        (pipe.out_dir(stage) / "checkpoints").mkdir(parents=True)
+        (pipe.out_dir(stage) / "checkpoints" / "last.ckpt").write_bytes(b"")
+
+        seen = []
+        pipe._spawn = lambda argv, log_path: (seen.append(argv), (0, False))[1]
+        pipe.run_stage(stage)
+
+        resumed = any(a.startswith("ckpt_path=") for a in seen[0])
+        assert resumed is expect_resume, f"{profile} should resume={expect_resume}"
+
+
 def test_dataloader_workers_default_to_zero():
     """Workers pass tensors through /dev/shm, which is small in Kaggle's container.
 
@@ -307,6 +332,67 @@ def test_a_hung_stage_is_killed_and_reported(tmp_path):
 
     assert hung, "the watchdog should have killed it"
     assert code != 0
+
+
+def test_stage_output_goes_to_the_log_not_the_console(tmp_path, capsys):
+    """Forwarding every stage's output to a notebook wedges it.
+
+    Jupyter rate-limits stdout. Once the kernel stops consuming, the pipeline blocks on
+    write, stops draining the child's pipe, the child fills the 64 KB buffer and blocks
+    too - both frozen for good. The full output still reaches stage.log.
+    """
+    pipe = _pipeline(profile="smoke")
+    pipe.root = tmp_path
+    pipe.log_root = tmp_path / "logs"
+    pipe.pipeline_dir = tmp_path / "logs" / "pipeline"
+    log = tmp_path / "stage.log"
+
+    shout = "print('x' * 200)\n" * 50
+    code, hung = pipe._spawn([sys.executable, "-c", shout], log)
+
+    assert (code, hung) == (0, False)
+    assert log.read_text().count("x" * 200) == 50, "everything must reach the log"
+    assert "x" * 200 not in capsys.readouterr().out, "and none of it the console"
+
+
+def test_verbose_forwards_stage_output(tmp_path, capsys):
+    """The escape hatch for debugging a single stage."""
+    pipe = _pipeline(profile="smoke", verbose=True)
+    pipe.root = tmp_path
+    pipe.log_root = tmp_path / "logs"
+    pipe.pipeline_dir = tmp_path / "logs" / "pipeline"
+
+    pipe._spawn([sys.executable, "-c", "print('visible')"], tmp_path / "stage.log")
+    assert "visible" in capsys.readouterr().out
+
+
+def test_a_failing_stage_still_shows_its_error(tmp_path, capsys):
+    """Silencing stage output must not silence the reason a stage failed."""
+    pipe = _pipeline(profile="smoke")
+    pipe.root = tmp_path
+    pipe.log_root = tmp_path / "logs"
+    pipe.pipeline_dir = tmp_path / "logs" / "pipeline"
+
+    log = tmp_path / "stage.log"
+    log.write_text("Traceback (most recent call last):\nValueError: the real reason\n")
+    pipe._tail(log)
+
+    assert "the real reason" in capsys.readouterr().out
+
+
+def test_the_config_tree_dump_is_switched_off(tmp_path):
+    """~120 lines per stage of config Hydra already saved to disk. Volume is the hazard."""
+    pipe = _pipeline(profile="smoke")
+    pipe.root = tmp_path
+    pipe.log_root = tmp_path / "logs"
+    pipe.pipeline_dir = tmp_path / "logs" / "pipeline"
+
+    stage = next(s for s in kp.build_stages(pipe) if s.is_train)
+    seen = []
+    pipe._spawn = lambda argv, log_path: (seen.append(argv), (0, False))[1]
+    pipe.run_stage(stage)
+
+    assert "extras.print_config=false" in seen[0]
 
 
 def test_a_healthy_stage_is_not_killed(tmp_path):

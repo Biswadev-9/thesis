@@ -505,7 +505,7 @@ python src/train.py data.recipe=clahe
 ./env/Scripts/python.exe -m pytest tests/ -q
 ```
 
-327 tests. They cover leakage, the corrected focal loss, protocol conformance to Step 15,
+341 tests. They cover leakage, the corrected focal loss, protocol conformance to Step 15,
 dataset-root disambiguation, the gate's per-pixel softmax, all eight ablation arms, the
 quantum mixture arithmetic, checkpoint round-tripping, and the Step 14 selection rule -
 including that plain CE cannot be selected and that ties break on calibration rather

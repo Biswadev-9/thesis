@@ -811,12 +811,19 @@ class Pipeline:
             raise BudgetExhausted(f"{budget / 60:.1f} min left; not starting {stage.id}")
 
         out.mkdir(parents=True, exist_ok=True)
-        argv = [sys.executable, ENTRYPOINTS[stage.entry], *overrides]
+        # The resolved config is written to <out>/.hydra/config.yaml regardless, so the
+        # ~120-line tree every stage prints is pure noise - and volume is what wedges a
+        # notebook's output stream.
+        argv = [sys.executable, ENTRYPOINTS[stage.entry], *overrides, "extras.print_config=false"]
 
         cap: Optional[float] = None
         if stage.is_train:
+            # Resuming only earns its keep for a run measured in hours. A shortened
+            # profile trains one epoch on three batches, so restarting is free - and the
+            # leftover last.ckpt belongs to a run that did not finish, which is a state
+            # worth discarding rather than restoring from.
             last = out / "checkpoints" / "last.ckpt"
-            if last.is_file() and not self.args.force:
+            if last.is_file() and not self.args.force and self.protocol_intact:
                 argv.append(f"ckpt_path={last.as_posix()}")
                 self.echo(f"  [resume]  {stage.id} from last.ckpt")
             if not self.args.no_time_cap:
@@ -872,6 +879,8 @@ class Pipeline:
 
         if code != 0:
             self.echo(f"  [FAIL]    {stage.id}  exit {code}  after {elapsed / 60:.1f} min")
+            if not self.args.verbose:
+                self._tail(out / "stage.log")
             self.records.append(record)
             if stage.optional:
                 return "failed"
@@ -943,11 +952,13 @@ class Pipeline:
                     elapsed = time.time() - began
                     if limit is not None and elapsed > limit:
                         timed_out.set()
-                        self.echo(
-                            f"  [timeout] no completion after {elapsed / 60:.0f} min; "
-                            "killing the stage"
-                        )
+                        # Kill first, report second. If stdout is what is blocked, echoing
+                        # would block the watchdog too and nothing would ever be killed.
                         process.kill()
+                        self.echo(
+                            f"  [timeout] killed after {elapsed / 60:.0f} min with no "
+                            "sign of finishing"
+                        )
                         return
                     self.echo(f"  [....]    still running, {elapsed / 60:.0f} min elapsed")
 
@@ -956,17 +967,36 @@ class Pipeline:
 
             try:
                 for line in process.stdout:
-                    sys.stdout.write(line)
-                    # A notebook cell's stdout is a pipe, so Python block-buffers it and
-                    # a long stage looks hung for minutes at a time. Flush per line.
-                    sys.stdout.flush()
+                    # Always to the file; only to the console when asked. A notebook's
+                    # stdout is rate-limited by Jupyter, and forwarding every line of
+                    # every stage exceeds it: the write blocks, this loop stops draining
+                    # the pipe, the child fills the 64 KB pipe buffer and blocks on its
+                    # own write, and both processes freeze for good. The full output is
+                    # in stage.log either way.
                     handle.write(line)
+                    if self.args.verbose:
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
                 process.stdout.close()
                 code = process.wait()
             finally:
                 finished.set()
 
             return code, timed_out.is_set()
+
+    def _tail(self, log_path: Path, lines: int = 40) -> None:
+        """Echo the end of a stage log, so a failure is diagnosable without the file.
+
+        :param log_path: The stage log.
+        :param lines: How many trailing lines to show.
+        """
+        try:
+            tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return
+        self.echo(f"  ---- last {min(lines, len(tail))} lines of {log_path.name} ----")
+        for line in tail[-lines:]:
+            self.echo(f"  | {line}")
 
 
 def _hms(seconds: float) -> str:
@@ -1663,6 +1693,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--keep-going", action="store_true", help="Continue past a failing stage."
     )
     parser.add_argument("--progress", action="store_true", help="Show Lightning progress bars.")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Forward every stage's output to the console. Off by default: a notebook's "
+        "stdout is rate-limited by Jupyter, and the volume from 66 stages wedges it. The "
+        "full output is always in each stage's stage.log; failures print their tail.",
+    )
     parser.add_argument(
         "--no-preflight",
         dest="preflight",
