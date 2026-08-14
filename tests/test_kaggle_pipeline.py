@@ -649,15 +649,37 @@ def test_linking_replaces_a_broken_symlink(tmp_path):
     assert kp.is_dataset_root(target)
 
 
-def test_linking_refuses_a_target_that_is_a_file(tmp_path):
-    """Neither a directory nor a link: the case that used to fall through."""
+def test_linking_replaces_a_stray_file_at_the_target(tmp_path):
+    """Neither a directory nor a link: the case that used to fall through.
+
+    Kaggle's working-directory persistence restores a symlink that pointed into
+    /kaggle/input as a plain file, so this is a state users actually reach. A file cannot
+    be a dataset, so it is replaced rather than reported - refusing would strand the user
+    with a path only a shell can clear.
+    """
     source = _make_dataset(tmp_path / "source")
     target = tmp_path / "bt_mri"
-    target.write_text("not a dataset")
+    target.write_text("dead symlink residue")
 
-    with pytest.raises(RuntimeError, match="neither a directory nor a symlink"):
-        kp.link_dataset(source, target)
-    assert target.read_text() == "not a dataset"
+    assert kp.link_dataset(source, target) in ("replaced", "copied")
+    assert kp.is_dataset_root(target)
+
+
+def test_a_stray_file_is_described_not_guessed_at(tmp_path):
+    """Messages should say what was found, so the next report needs no round trip."""
+    target = tmp_path / "bt_mri"
+    target.write_text("12345")
+    assert _describe_path_of(target) == "a file of 5 bytes"
+
+    assert "unreadable" in _describe_path_of(tmp_path / "nothing_here")
+
+
+def _describe_path_of(path):
+    """:param path: Path to describe.
+
+    :return: The driver's description of it.
+    """
+    return kp._describe_path(path)
 
 
 def test_copy_fallback_never_runs_onto_an_existing_target(tmp_path, monkeypatch):

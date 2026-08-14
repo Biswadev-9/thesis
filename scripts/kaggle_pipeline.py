@@ -256,6 +256,20 @@ def find_external_root(search_root: Path, max_depth: int = MAX_SEARCH_DEPTH) -> 
     return None
 
 
+def _describe_path(path: Path) -> str:
+    """Say what actually occupies a path, for messages that would otherwise guess.
+
+    :param path: Path to inspect, without following a final symlink.
+    :return: A short human description.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError as error:
+        return f"an unreadable entry ({error.strerror})"
+    kind = "a file" if os.path.isfile(path) else "a special file"
+    return f"{kind} of {info.st_size} bytes"
+
+
 def _create_link(source: Path, target: Path) -> str:
     """Create ``target`` as a link to ``source``. ``target`` must not exist.
 
@@ -332,10 +346,14 @@ def link_dataset(source: Path, target: Path) -> str:
         target.rmdir()
         return _create_link(source, target)
 
-    raise RuntimeError(
-        f"{target} exists but is neither a directory nor a symlink. Expected the "
-        "dataset root to live there; remove it by hand and re-run."
-    )
+    # Neither a directory nor a symlink: a stray file where a directory must be. Kaggle's
+    # working-directory persistence restores a symlink that pointed into /kaggle/input as
+    # a plain file, which is how this arises in practice. It cannot be a dataset - those
+    # are directories - so replacing it loses nothing, and refusing would strand the user
+    # with a path only they can clear.
+    print(f"Replacing {_describe_path(target)} at {target}")
+    target.unlink()
+    return "replaced" if _create_link(source, target) == "linked" else "copied"
 
 
 def setup_kaggle_data(

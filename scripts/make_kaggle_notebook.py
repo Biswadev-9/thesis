@@ -48,9 +48,16 @@ md(r"""
 |---|---|---|
 | **Accelerator** | GPU T4 ×2 or P100 | The study is not viable on CPU |
 | **Internet** | On | Needed to clone the repo and pip-install |
-| **Persistence** | Files only | Keeps `/kaggle/working` between sessions |
+| **Persistence** | **No persistence** | See below — leave this off |
 | **Add-ons → Secrets** | `GITHUB_TOKEN` | Only if the repo is private |
 | **Input datasets** | see below | Faster and works with Internet off |
+
+**Leave Persistence off.** It sounds like what you want for a multi-session run, but this
+notebook resumes a different way — by attaching the previous version's *output* as an
+input (cell 6). Persistence instead keeps a half-built `/kaggle/working` across sessions,
+and a symlink into `/kaggle/input` does not survive that intact: it comes back as a plain
+file, which nothing can use as a dataset. Save Version is the durable copy; persistence
+just carries stale state forward.
 
 Attach these two datasets (**+ Add Input → Datasets**), or leave Internet on and the
 notebook will download them:
@@ -97,12 +104,6 @@ code(r'''
 # ---------------------------------------------------------------------------- settings
 PROFILE        = "smoke"      # "smoke" | "fast" | "full"
 BUDGET_HOURS   = 11.0          # stop and save before Kaggle's 12h cut-off
-NUM_WORKERS    = 0             # 0 is the safe value. Worker processes pass tensors
-                               # through /dev/shm, which is small in Kaggle's container;
-                               # when it fills they block forever instead of erroring,
-                               # and the stage hangs silently. Try 2 only once a full
-                               # run has completed cleanly.
-
 GITHUB_USER    = "Biswadev-9"
 REPO_NAME      = "thesis"
 BRANCH         = "main"
@@ -113,7 +114,12 @@ RUN_TESTS      = True          # ~305 tests, ~3 min; catches a broken environmen
 PUSH_RESULTS   = False         # push the results bundle to a kaggle-results branch
 PRUNE_CHECKPOINTS = False      # see cell 11 before turning this on
 
-EXTRA_ARGS     = []            # e.g. ["--skip", "step11"] or ["--only", "step16_internal"]
+# Everything above lives in Kaggle's copy of this notebook, which `git push` cannot
+# reach - only the cells you edit here change it. Compatibility defaults (dataloader
+# workers, stage timeouts) therefore live in scripts/kaggle_pipeline.py, which IS
+# refreshed by the clone in cell 3. Override one deliberately, here:
+EXTRA_ARGS     = []            # e.g. ["--skip", "step11"], ["--only", "step16_internal"],
+                               # or ["--num-workers", "2"] once a run completes cleanly
 # ---------------------------------------------------------------------------------------
 
 WORK = "/kaggle/working"
@@ -140,7 +146,12 @@ for d in sorted(Path("/kaggle/input").glob("*")) if Path("/kaggle/input").is_dir
 md("""## 3 · Clone the repository
 
 Cloned fresh every session, so the code always matches `main`. Results are *not* stored
-in the repo — they come back from the previous session's output in cell 6.""")
+in the repo — they come back from the previous session's output in cell 6.
+
+**Note the commit this prints.** Kaggle keeps its own copy of this notebook, so
+`git push` updates the code cloned here but never the cells you are reading. If a fix
+does not seem to have taken effect, ask where it lives: in the repo (arrives with the
+clone below) or in a cell above (you must edit it here, or re-import the notebook).""")
 
 code(r'''
 import os, shutil, subprocess
@@ -314,7 +325,6 @@ import shlex, subprocess, sys
 cmd = [sys.executable, "scripts/kaggle_pipeline.py",
        "--profile", PROFILE,
        "--budget-hours", str(BUDGET_HOURS),
-       "--num-workers", str(NUM_WORKERS),
        "--keep-going"]
 if RESTORE_FROM:
     cmd += ["--restore-from", RESTORE_FROM]
