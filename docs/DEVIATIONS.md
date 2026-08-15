@@ -651,6 +651,162 @@ reach the input pixels and are not identically zero.
 
 ---
 
+## Phase 7 — explainability and quantum advantage (Steps 19, 20)
+
+### F10 — attention rollout for the Transformer baseline · `done`
+
+**Specification** Step 19: *"Use attention rollout or attention maps for Transformer-based
+components."*
+
+**Notebook** Never explained its ViT or Swin baselines at all.
+
+**Now** `AttentionCapture` temporarily wraps each `nn.MultiheadAttention` forward to
+request weights `torchvision` otherwise computes and discards, then restores the originals
+so the model is left exactly as found. `attention_rollout` composes the layers with the
+identity term that accounts for residual connections - without it, a layer with diffuse
+attention would appear to erase all signal.
+
+### F11 — the efficiency table is complete · `done`
+
+Step 20 lists trainable parameters, inference time, **training time** and **memory usage**.
+Parameters and inference time are measured directly; training time and peak memory are read
+from each run's `resource_usage.json`, which `ResourceMonitor` has been writing since
+Phase 3. Measuring during training was the only way to have them without retraining.
+
+### F12 — a properly powered paired test · `done`
+
+**Notebook** Ran a Wilcoxon signed-rank test over **four** per-class F1 values. That design
+cannot reach significance at any effect size: the two-sided floor for n=4 is 0.125.
+
+**Now** `src/utils/statistics.py` provides a **paired bootstrap** over test predictions -
+resampling sample indices and scoring both models on the same draw, which preserves the
+correlation between two models that saw identical images. Over ~1000 test samples it
+resolves differences of a fraction of a point. McNemar sits alongside it, switching to the
+exact binomial test when discordant pairs are few, where the chi-square approximation is
+unreliable.
+
+`wilcoxon_paired` **refuses** samples below six pairs and returns an explanation instead of
+an uninformative p-value. Pinned by a test using the notebook's exact four-value scenario.
+
+### D25 — the no-quantum control is retrained, not masked · `done`
+
+Step 20 compares the full model against "the same architecture after removing the quantum
+branch". Zeroing the quantum features on a head *already trained with them present*
+measures disruption - the head has learned to rely on inputs that suddenly vanished - not
+contribution. The control is therefore retrained from scratch on zeroed features, which
+asks the question the specification poses.
+
+### D26 — Step 20 is built to be able to return "no" · `done`
+
+The specification states plainly that "if the quantum branch does not outperform strong
+baselines, report the result honestly", and lists parameter efficiency, robustness and
+interpretability as fallback criteria. The verdict is therefore *generated from the
+evidence*, distinguishing three cases: significant improvement, nominal improvement whose
+bootstrap interval spans zero, and no improvement. Each is phrased for direct use in the
+write-up, with the fallback criteria attached.
+
+### D27 — Grad-CAM re-enables gradients on its own input · `done`
+
+Found during the Phase 7 smoke run. Every branch in the pipeline is frozen with
+`requires_grad = False`; with an input that is also not a grad-requiring leaf, autograd
+prunes the whole subgraph, the backward hook never fires, and Grad-CAM has no gradients to
+weight activations by.
+
+`GradCAM` now makes the input a grad-requiring leaf itself rather than relying on callers
+to remember. Its two failure modes are also distinguished in the error message - "no
+activations" (wrong layer) versus "no gradients" (pruned graph) - because they have
+different causes and different fixes. A test exercises the fully frozen pipeline, which is
+the real usage.
+
+### D28 — saliency hooks are removed even on failure · `done`
+
+Both `GradCAM` and `AttentionCapture` are context managers that clean up in `__exit__`,
+including after an exception. The notebook registered hooks at module scope and never
+detached them, so every later forward pass kept writing into stale buffers - which produces
+*wrong saliency maps* rather than an error. Two tests cover the normal and the exception
+path.
+
+Related: the MC-dropout pass restores every dropout layer to eval mode in a `finally`
+block. Leaving them in train mode would silently randomise every analysis that ran
+afterwards.
+
+### D29 — Step 20's control is trained under the Step 15 protocol, not a slacker one · `done`
+
+Found by auditing Step 20 against Step 15 rather than against its own config. The control
+had been given its own training settings, and every difference ran the same direction: it
+trained for fewer epochs, without early stopping, without best-checkpoint selection, at a
+different learning rate, without the weighted sampler, and it kept its final weights rather
+than its best. A handicapped control does not measure the quantum branch - it manufactures
+a positive result. Six mismatches, all corrected in Step 20's favour of Step 15.
+
+Step 15 is the source of truth and was **not** modified. Its real protocol is what
+`configs/protocol/fixed.yaml` composes, which is not what the YAML files read individually
+say: `configs/model/final_classifier.yaml` declares `lr: 1e-3`, and the protocol overrides
+it globally to `1e-4`. The values were established by composing the config, not by reading
+it.
+
+Two of the six could not be fixed by copying a number:
+
+- **The loss is not a constant.** Step 15 has no fixed loss - `scripts/kaggle_pipeline.py`
+  reads Step 14's `selected_loss` at run time and passes `loss@model.criterion=<name>`, so
+  hard-coding today's answer (`weighted_ce`) in Step 20 would diverge silently the day
+  Step 14 chose `focal`. Step 20 now resolves the loss the same way, from
+  `analysis.loss_summary`, with `analysis.loss` mirroring the pipeline's `--loss` flag. The
+  config's criterion remains only as a fallback, and taking it logs a warning and records
+  `loss_provenance.source: "…(unverified)"` in the summary, so an unverified comparison is
+  never mistaken for a verified one.
+- **The seed had to be shown to be fair before it could be matched.** The full profile
+  trains three seeds, which raised the question of whether one control was being compared
+  against the best of three. It is not: every downstream stage reads `pipe.seeds[0]`, a
+  fixed position, so the checkpoint under evaluation comes from one predetermined seed and
+  a single seed-matched control is the correct comparison. The control trains at
+  `analysis.seed`, and `seed_check` in the summary flags it if a reordered `--seeds` ever
+  breaks the match.
+
+The duplication of Step 15's protocol into Step 20's config is unavoidable - Hydra cannot
+reach a training experiment's composition from an analysis config - so
+`tests/test_protocol_consistency.py` composes the real Step 15 config and asserts every
+value matches. Changing the protocol now fails the suite instead of quietly invalidating
+Step 20. Verified by perturbation: altering `max_epochs`, `lr`, `use_class_weights`,
+`patience`, `dropout` or `T_max`, breaking the Step 14 loss lookup, or switching
+`seeds[0]` to `seeds[-1]` each fails one or two tests.
+
+### D31 — Step 14's selection reaches Step 20 through the runner, not through a human · `done`
+
+Steps 19 and 20 were the only implemented steps the pipeline did not run, so Step 20 had to
+be launched by hand with `analysis.loss_summary=<step14 summary>` attached. D29 made a
+forgotten flag *visible* in the output; it could not make it impossible. Both stages are
+now in the graph, after Step 18, and the runner supplies the summary path itself. If
+Step 14 has not run and no `--loss` was given, the stage refuses to build with the same
+error Step 15 raises - failing loudly beats a defensible-looking quantum-advantage number
+whose control trained on an unverified objective.
+
+The *path* is passed, not the resolved name, so Step 14 remains the single place the answer
+lives and Step 20's summary records which file it read. `--loss` short-circuits both stages
+identically, so they cannot disagree.
+
+Neither stage can influence anything upstream: both only read finalized checkpoints, and a
+test asserts they stay after Steps 14-18 in the graph. The shortened profiles thin Step 19's
+SHAP and MC-dropout sampling and Step 20's bootstrap, which only widens intervals. Step 20's
+control keeps Step 15's full training protocol in **every** profile - a control trained for
+fewer epochs would lose for a reason unrelated to the quantum branch, which is a fake
+positive even in a run already marked unreportable.
+
+Found while wiring this: Step 20's config carries only `fusion_ckpt` - the branches reach it
+through the feature cache - so passing it the classical and quantum checkpoints made Hydra
+reject the whole stage. On Kaggle that surfaces hours into a run. A test now composes both
+stages from the overrides the pipeline actually emits.
+
+### D30 — Step 18 builds its degraded datamodule from the real dataset paths · `done`
+
+`DegradedTestDataModule` was constructed without `data_dir`, `raw_subdir` or
+`split_subpath`, so it fell back to defaults. Whenever the study ran against a dataset at a
+non-default location - which is every Kaggle run - robustness would have been measured on
+the wrong data or failed outright. The paths are now taken from the source datamodule the
+study was given. Two tests record what is passed through and assert it matches.
+
+---
+
 ## Environment and template repairs
 
 These are not methodological, but they changed files and are recorded for traceability.
@@ -694,6 +850,21 @@ unaffected and the defect only surfaced through the template example.
 Fix: the registration moved to `src/__init__.py`, so it runs however the package is
 entered. This makes DDP viable for the project's own models rather than only fixing the
 example. Suite now green.
+
+### E5 — `test_train_resume` updated after the MNIST example was removed · `done`
+
+`configs/data/mnist.yaml` was deleted and `configs/train.yaml`'s defaults became
+`data: bt_mri, model: baseline_simple_cnn`. The template's `tests/test_train.py` therefore
+began training *this project's* pipeline, and `test_train_resume` started failing: it
+asserted `epoch_001.ckpt` existed after resuming, which under `save_top_k=1` requires
+validation accuracy to improve. With `limit_train_batches=0.01` a second epoch sees roughly
+one batch of 4,617 MRI images, so whether it improves is chance.
+
+The assertion held for MNIST and stopped holding for this data. The test now asserts what
+it is actually for - that training resumes and advances past the first run's epoch - by
+comparing the epoch recorded in `last.ckpt`. Confirmed by running the same test against the
+Phase 2 commit, where it passes, so the change is attributable to the config swap rather
+than to a pipeline regression.
 
 ### E4 — Dependencies added · `done`
 

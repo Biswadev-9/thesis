@@ -1,0 +1,78 @@
+# Step 19: explainability and uncertainty.
+#
+#   python src/analyze.py analysis=step19_explainability #       analysis.classical_ckpt=<step10> analysis.quantum_ckpt=<step12> #       analysis.fusion_ckpt=<step15>
+#
+# Produces Grad-CAM panels (correct AND incorrect per class), deletion/insertion sanity
+# checks, MC-dropout uncertainty, and SHAP attribution over the fused vector.
+#
+# Read the sanity checks before quoting the heatmaps: a near-zero deletion drop means the
+# decision is distributed rather than concentrated where Grad-CAM points. That is a
+# finding about the model, not a broken explanation.
+
+_target_: src.analysis.explainability.ExplainabilityStudy
+
+name: step19_explainability
+
+_recursive_: false
+
+classical_ckpt: null
+quantum_ckpt: null
+fusion_ckpt: null
+
+classical_model:
+  _target_: src.models.mri_classification_module.MRIClassificationModule
+  optimizer: {_target_: torch.optim.AdamW, _partial_: true, lr: 1e-4}
+  net:
+    _target_: src.models.components.transfer.TransferBackbone
+    arch: efficientnet_b0
+    num_classes: 4
+    weights: null
+    freeze_backbone: true
+    dropout: 0.3
+  num_classes: 4
+
+quantum_model:
+  _target_: src.models.mri_classification_module.MRIClassificationModule
+  optimizer: {_target_: torch.optim.AdamW, _partial_: true, lr: 1e-4}
+  net:
+    _target_: src.models.components.quantum.AdaptiveQuantumClassifier
+    channels: 32
+    num_classes: 4
+    n_qubits: 4
+    circuit_names: null
+    hidden_dims: [128, 64]
+    dropout: 0.3
+  num_classes: 4
+
+fusion_model:
+  _target_: src.models.feature_fusion_module.FeatureFusionModule
+  optimizer: {_target_: torch.optim.AdamW, _partial_: true, lr: 1e-3}
+  net:
+    _target_: src.models.components.fusion.FusedFeatureClassifier
+    classical_dim: 1280
+    spatial_dim: 32
+    quantum_dim: 4
+    proj_dim: 64
+    hidden_dims: [128, 64]
+    num_classes: 4
+    dropout: 0.4
+  num_classes: 4
+
+# Step 19: "Include correct and incorrect prediction examples for each class."
+examples_per_class: 1
+
+# Stochastic forward passes for the uncertainty estimate.
+mc_dropout_samples: 30
+
+# SHAP is the slowest part; KernelExplainer scales poorly in the fused dimension.
+shap_background: 50
+shap_explain: 25
+
+# Fraction of highest-scoring pixels deleted, and revealed, in the sanity check.
+deletion_fraction: 0.2
+
+# Cap on test samples for MC-dropout and SHAP.
+max_samples: 300
+
+seed: ${seed}
+accelerator: auto

@@ -2,8 +2,8 @@
 
 How to run the thesis study from this repository.
 
-**Status: Phases 1–6 implemented — specification Steps 1, 3–18.**
-Steps 19–23 are not built yet; their section below says so explicitly.
+**Status: Phases 1–7 implemented — specification Steps 1, 3–20.**
+Steps 21–23 are not built yet; their section below says so explicitly.
 
 > This file is updated at the end of every phase. If a command appears here, it has been
 > run and works. If a step is not listed, it is not implemented yet.
@@ -451,11 +451,62 @@ verdict.
 > impossible to tell which are degraded copies of *training* images. Evaluating on them
 > could silently score the model on its own training data.
 
-### Steps 19–23 — not implemented yet
+### Step 19 — Explainability and uncertainty
+
+```bash
+python src/analyze.py analysis=step19_explainability     analysis.classical_ckpt=<step10> analysis.quantum_ckpt=<step12>     analysis.fusion_ckpt=<step15>
+```
+
+Grad-CAM panels showing **correct and incorrect** cases per class, deletion/insertion
+sanity checks, MC-dropout uncertainty, and SHAP attribution over the fused vector.
+
+Read the sanity checks before quoting any heatmap. A near-zero deletion drop means the
+decision is *distributed* rather than concentrated where Grad-CAM points — that is a
+finding about the model, not a broken explanation. The summary's `interpretation` field
+states which case you are in.
+
+The MC-dropout result is the one to check for deployability: if variance on incorrect
+predictions is several times higher than on correct ones, thresholding it is a usable
+triage signal for human review.
+
+### Step 20 — Quantum advantage and efficiency
+
+```bash
+python src/analyze.py analysis=step20_quantum_advantage     analysis.fusion_ckpt=<step15 run> analysis.tag=default     analysis.loss_summary=logs/analyze/runs/step14_loss_selection/step14_loss_selection_summary.json     'analysis.run_dirs={classical: logs/train/runs/<step10>, quantum: logs/train/runs/<step12>}'
+```
+
+**Pass `loss_summary`** — on the manual path only. Step 15 has no fixed loss: the pipeline
+reads Step 14's `selected_loss` at run time and trains the final model with it. Pointing
+Step 20 at the same summary makes the control provably use that loss too; without it the
+analysis falls back to the config's `weighted_ce`, logs a warning, and records
+`loss_provenance.source: "…(unverified)"` in the summary. Use `analysis.loss=<name>` to
+force one, mirroring the pipeline's `--loss` flag.
+
+Running through `scripts/kaggle_pipeline.py` (§6) supplies this automatically and refuses
+to start the stage if Step 14 has not run, so the manual path is the only one where the
+flag can be forgotten.
+
+The control is trained at `analysis.seed` and compared against a checkpoint from a single
+fixed seed (`seeds[0]`), which is the same seed every downstream stage evaluates — so the
+comparison is seed-matched, not best-of-three. The summary's `seed_check` field flags it if
+the checkpoint path's seed and the control's seed ever diverge.
+
+Four independent lines of evidence: paired significance (McNemar + paired bootstrap) against
+a **retrained** no-quantum control, an efficiency table, and feature separability with and
+without the quantum block.
+
+> The control is retrained, not masked at inference. A head trained with the quantum
+> features present has already adapted to them, so masking measures disruption rather than
+> contribution.
+
+**This analysis is built to be able to return "no".** The specification explicitly permits a
+negative result and asks for it honestly, so the verdict is generated from the evidence.
+`run_dirs` pulls training time and peak memory from each run's `resource_usage.json`.
+
+### Steps 21–23 — not implemented yet
 
 | Steps | What | Phase |
 |---|---|---|
-| 19, 20 | Explainability; quantum advantage and efficiency | 7 |
 | 21, 22, 23 | Ablation table A0–A8; RQ mapping; statistics | 8 |
 
 ---
@@ -557,6 +608,14 @@ JSON each study writes and applies them to every stage downstream — materialis
 recipe first if it needs a mirror. `--no-apply-selections` turns that off;
 `--recipe/--imbalance/--loss` force a value by hand.
 
+Step 14's choice travels furthest. Step 15 trains with it, and Step 20's control has to
+train with it too or the quantum comparison is between two different objectives. The
+pipeline hands Step 20 the *path* to Step 14's summary rather than a loss name, so Step 14
+stays the one place the answer lives, and Step 20 records in its own output which file it
+read. If Step 14 has not run and no `--loss` was given, the stage **refuses to build** —
+the same way Step 15 does — rather than falling back to a configured default and producing
+a quantum-advantage number whose control trained on an unverified loss.
+
 **Finds the dataset wherever the host mounted it.** `--setup-data` searches `/kaggle/input`
 for the directory holding **both** `Training/` and `Testing/` with all four class folders
 inside each, and links that directory — not the mount point — to `data/raw/bt_mri`:
@@ -652,4 +711,5 @@ mid-range GPU. The proxy studies (Steps 6 and 8) are CPU-feasible at 10–25 min
 | 4 | 10, 11, 12 | Classical branch, 8-arm multiscale ablation, adaptive quantum branch, embedding + gate-morphology analyses, checkpoint loader |
 | 5 | 13, 14, 15 | Feature cache, three fusion strategies, final classifier, branch-contribution ablation, validation-only loss selection, calibration metrics |
 | 6 | 16, 17, 18 | Full metric battery with once-only test lock, Figshare external validation, degradation sweep, full image-to-logits pipeline |
-| — | 4–18 | `scripts/kaggle_pipeline.py` and `notebooks/kaggle_run.ipynb`: the whole study as one resumable command, plus the Kaggle Run-All notebook around it (§6). Fixed `train.yaml`/`eval.yaml` still defaulting to the deleted `data/mnist` config. |
+| 7 | 19, 20 | Grad-CAM, ViT attention rollout, SHAP, MC-dropout, deletion/insertion, paired bootstrap + McNemar, efficiency and separability |
+| — | 4–20 | `scripts/kaggle_pipeline.py` and `notebooks/kaggle_run.ipynb`: the whole study as one resumable command, plus the Kaggle Run-All notebook around it (§6). Steps 19 and 20 run automatically at the end of the graph, and Step 20 is handed Step 14's loss selection rather than depending on someone remembering to pass it. Fixed `train.yaml`/`eval.yaml` still defaulting to the deleted `data/mnist` config. |

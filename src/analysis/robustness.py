@@ -100,8 +100,16 @@ class RobustnessStudy(Analysis):
                 "baselines."
             )
 
-        data_dir = datamodule.hparams.data_dir
-        class_names = datamodule.class_names
+        # Take the dataset location from the datamodule that was configured, rather than
+        # letting DegradedTestDataModule fall back to its defaults. With a custom
+        # `raw_subdir` or `split_subpath` the defaults would silently point at a different
+        # tree - or a different split - and Step 18 would report robustness for data the
+        # model was never evaluated on.
+        dataset_paths = {
+            "data_dir": datamodule.hparams.data_dir,
+            "raw_subdir": datamodule.hparams.raw_subdir,
+            "split_subpath": datamodule.hparams.split_subpath,
+        }
         device = torch.device(
             "cuda" if (self.accelerator != "cpu" and torch.cuda.is_available()) else "cpu"
         )
@@ -130,7 +138,7 @@ class RobustnessStudy(Analysis):
                 score = self._evaluate(
                     model=model,
                     spec=self.models[model_name],
-                    data_dir=data_dir,
+                    dataset_paths=dataset_paths,
                     degradation=degradation,
                     device=device,
                 )
@@ -210,7 +218,7 @@ class RobustnessStudy(Analysis):
         self,
         model: torch.nn.Module,
         spec: Dict[str, Any],
-        data_dir: str,
+        dataset_paths: Dict[str, str],
         degradation: Any,
         device: torch.device,
     ) -> float:
@@ -218,7 +226,9 @@ class RobustnessStudy(Analysis):
 
         :param model: Loaded model.
         :param spec: Its spec, which may name a preprocessing recipe.
-        :param data_dir: Project data directory.
+        :param dataset_paths: ``data_dir``, ``raw_subdir`` and ``split_subpath`` taken from
+            the configured datamodule, so the degraded loader reads the same tree and the
+            same split the rest of the study uses.
         :param degradation: Degradation, or ``None`` for clean.
         :param device: Device to run on.
         :return: Macro-F1 on the degraded test split.
@@ -229,7 +239,7 @@ class RobustnessStudy(Analysis):
         )
 
         datamodule = DegradedTestDataModule(
-            data_dir=data_dir,
+            **dataset_paths,
             degradation=degradation,
             preprocess=preprocess,
             image_size=self.image_size,

@@ -104,7 +104,7 @@ def test_stage_ids_are_unique():
 
 
 def test_full_profile_covers_every_step():
-    """The graph runs the whole implemented study, Steps 4 through 18."""
+    """The graph runs the whole implemented study, Steps 4 through 20."""
     groups = {s.group for s in kp.build_stages(_pipeline(profile="full"))}
     assert groups == {
         "step04",
@@ -121,6 +121,8 @@ def test_full_profile_covers_every_step():
         "step16",
         "step17",
         "step18",
+        "step19",
+        "step20",
     }
 
 
@@ -225,7 +227,7 @@ def test_from_starts_partway_down(stages):
     args = kp.parse_args(["--from", "step13_fusion"])
     chosen = kp.select_stages(stages, args)
     assert chosen[0].id == "step13_fusion"
-    assert chosen[-1].id == "step18_robustness"
+    assert chosen[-1].id == stages[-1].id  # and keeps everything after it
 
 
 def test_until_keeps_the_last_match(stages):
@@ -452,6 +454,28 @@ def test_report_reads_the_pinned_directory_not_whatever_it_can_find(tmp_path):
     report = kp.write_report(pipe).read_text(encoding="utf-8")
     assert "weighted_ce" in report
     assert "focal" not in report
+
+
+def test_report_distinguishes_two_metrics_of_the_same_name(tmp_path):
+    """Step 17 reports a restricted and an unrestricted macro-F1.
+
+    Labelling both `macro_f1` printed the same name twice with no way to tell which was
+    which - and the two answer different questions about the same model.
+    """
+    pinned = tmp_path / "logs" / "analyze" / "runs" / "step17_external"
+    pinned.mkdir(parents=True)
+    (pinned / "step17_external_summary.json").write_text(
+        '{"restricted": {"macro_f1": 0.61}, "unrestricted": {"macro_f1": 0.42}}'
+    )
+
+    pipe = _pipeline()
+    pipe.root = tmp_path
+    pipe.log_root = tmp_path / "logs"
+    pipe.pipeline_dir = tmp_path / "logs" / "pipeline"
+
+    report = kp.write_report(pipe).read_text(encoding="utf-8")
+    assert "restricted.macro_f1: `0.61`" in report
+    assert "unrestricted.macro_f1: `0.42`" in report
 
 
 # ------------------------------------------------------------- finding the dataset

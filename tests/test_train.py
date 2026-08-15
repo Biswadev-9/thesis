@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
+import torch
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 
@@ -94,6 +95,10 @@ def test_train_resume(tmp_path: Path, cfg_train: DictConfig) -> None:
     assert "last.ckpt" in files
     assert "epoch_000.ckpt" in files
 
+    first_epochs = torch.load(
+        tmp_path / "checkpoints" / "last.ckpt", map_location="cpu", weights_only=False
+    )["epoch"]
+
     with open_dict(cfg_train):
         cfg_train.ckpt_path = str(tmp_path / "checkpoints" / "last.ckpt")
         cfg_train.trainer.max_epochs = 2
@@ -101,8 +106,19 @@ def test_train_resume(tmp_path: Path, cfg_train: DictConfig) -> None:
     metric_dict_2, _ = train(cfg_train)
 
     files = os.listdir(tmp_path / "checkpoints")
-    assert "epoch_001.ckpt" in files
-    assert "epoch_002.ckpt" not in files
+    # What this test is for is that training RESUMES - the run picks up from the saved
+    # state and reaches the higher epoch budget.
+    #
+    # It deliberately does not assert that `epoch_001.ckpt` appeared, nor that accuracy
+    # improved. `save_top_k=1` only writes a new epoch checkpoint when the monitored
+    # metric improves, and with `limit_train_batches=0.01` a second epoch sees about one
+    # batch of the training split. Whether that single batch improves validation accuracy
+    # is chance, not correctness - the original assertion held for MNIST and stopped
+    # holding when the default config became this project's own pipeline.
+    assert "last.ckpt" in files
 
-    assert metric_dict_1["train/acc"] < metric_dict_2["train/acc"]
-    assert metric_dict_1["val/acc"] < metric_dict_2["val/acc"]
+    resumed_epochs = torch.load(
+        tmp_path / "checkpoints" / "last.ckpt", map_location="cpu", weights_only=False
+    )["epoch"]
+    assert resumed_epochs > first_epochs, "resuming did not advance past the first run"
+    assert "epoch_002.ckpt" not in files, "trained beyond the requested epoch budget"

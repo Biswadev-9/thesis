@@ -1,0 +1,111 @@
+# Step 20: quantum advantage and efficiency.
+#
+#   python src/analyze.py analysis=step20_quantum_advantage \
+#       analysis.fusion_ckpt=<step15 run> analysis.tag=default
+#
+# Four independent lines of evidence: paired significance against a retrained no-quantum
+# control, fixed vs adaptive circuits, an efficiency table, and feature separability.
+#
+# The analysis is built to be able to return "no". The specification explicitly permits a
+# negative result and asks for it honestly, so the verdict is generated from the evidence
+# rather than hedged.
+#
+# The no-quantum control is RETRAINED rather than masked at inference: a head trained with
+# the quantum features present has already adapted to them, so masking measures disruption
+# rather than contribution.
+
+_target_: src.analysis.quantum_advantage.QuantumAdvantageStudy
+
+name: step20_quantum_advantage
+
+_recursive_: false
+
+tag: default
+
+fusion_ckpt: null
+
+# ---------------------------------------------------------------------------------------
+# The Step 15 training protocol, which the control MUST be trained under.
+#
+# Step 15 is the source of truth: `configs/protocol/fixed.yaml` composed with
+# `experiment=step15_final_protocol`. These values mirror it. They are duplicated rather
+# than interpolated because Hydra cannot reach a training-experiment's composition from an
+# analysis config - but the duplication is guarded:
+#
+#   tests/test_quantum_advantage_protocol.py composes the real Step 15 config and asserts
+#   every value below matches it.
+#
+# So amending the protocol fails the test suite rather than silently invalidating Step 20.
+# Do not edit these to "fix" a failure - edit them only to follow a deliberate change to
+# configs/protocol/fixed.yaml.
+# ---------------------------------------------------------------------------------------
+protocol:
+  max_epochs: 30
+  min_epochs: 1
+  patience: 12
+  monitor: "val/f1_macro"
+  mode: "max"
+  batch_size: 32
+  use_weighted_sampler: true
+
+# The full model's module config. The control is instantiated from this too, so optimizer,
+# scheduler, loss and architecture are identical by construction and only the quantum
+# features differ. `lr` and `T_max` here are the Step 15 protocol's values, NOT the
+# defaults in configs/model/final_classifier.yaml - the protocol overrides those globally
+# when Step 15 runs, and that override has to be reproduced here.
+fusion_model:
+  _target_: src.models.feature_fusion_module.FeatureFusionModule
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 1e-4
+    weight_decay: 1e-4
+  scheduler:
+    _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+    _partial_: true
+    T_max: 30
+  criterion:
+    # FALLBACK ONLY. Step 15 does not use a fixed loss: scripts/kaggle_pipeline.py reads
+    # Step 14's `selected_loss` at run time and passes
+    #     loss@model.criterion=<name>
+    # so whatever Step 14 chooses is what the final model trains with. Set
+    # `loss_summary` below and this block is overridden to match; it is used only when
+    # neither `loss` nor `loss_summary` is supplied, and a warning is logged when that
+    # happens.
+    _target_: src.models.components.losses.CrossEntropyLoss
+    use_class_weights: true
+    label_smoothing: 0.0
+  net:
+    _target_: src.models.components.fusion.FusedFeatureClassifier
+    classical_dim: 1280
+    spatial_dim: 32
+    quantum_dim: 4
+    proj_dim: 64
+    hidden_dims: [128, 64]
+    num_classes: 4
+    dropout: 0.4
+  num_classes: 4
+  class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+
+# --- the finalized Step 15 loss --------------------------------------------------------
+# Point this at Step 14's summary and the control provably trains with the same loss the
+# final model did, however Step 14 decides:
+#
+#   analysis.loss_summary=logs/analyze/runs/<step14 run>/step14_loss_selection_summary.json
+#
+# Leaving both unset falls back to `fusion_model.criterion` above and logs a warning,
+# because the match is then unverified.
+loss_summary: null
+
+# Explicit override, mirroring the pipeline's `--loss` flag. Takes precedence over
+# loss_summary.
+loss: null
+
+n_resamples: 2000
+
+# Training runs to read resource_usage.json from, so training time and peak memory reach
+# the efficiency table. e.g. {classical: logs/train/runs/<step10>, quantum: <step12>}
+run_dirs: {}
+
+seed: ${seed}
+accelerator: auto

@@ -111,6 +111,11 @@ IMBALANCE_OVERRIDES: Dict[str, Any] = {
     "combined_sampler_weighting": ("weighted_ce", True, False),
 }
 
+#: Where Step 14 records the loss it selected, as ``(stage id, entry point, filename)``.
+#: Step 15 trains with whatever is in here and Step 20's control has to match, so both
+#: read this one file rather than carrying a name of their own.
+STEP14_SUMMARY = ("step14_loss_selection", "analyze", "step14_loss_selection_summary.json")
+
 # ------------------------------------------------------------------------------------ #
 # Finding the dataset
 # ------------------------------------------------------------------------------------ #
@@ -562,6 +567,26 @@ class Pipeline:
                 "fast": ["analysis.epochs=12"],
             },
             "step18_robustness": {"smoke": ["analysis.limit_batches=2"], "fast": []},
+            # SHAP's KernelExplainer is the cost here, and it scales with the fused
+            # dimension. Shrinking the sample counts makes the estimates noisier; it
+            # changes nothing about what is measured.
+            "step19_explainability": {
+                "smoke": [
+                    "analysis.mc_dropout_samples=5",
+                    "analysis.shap_background=10",
+                    "analysis.shap_explain=5",
+                    "analysis.max_samples=40",
+                ],
+                "fast": ["analysis.shap_explain=10", "analysis.max_samples=150"],
+            },
+            # Only the bootstrap is thinned. The control's training protocol is left at
+            # Step 15's, because a control trained for fewer epochs would hand the quantum
+            # branch an advantage it did not earn - misleading even in a run marked
+            # unreportable.
+            "step20_quantum_advantage": {
+                "smoke": ["analysis.n_resamples=200"],
+                "fast": ["analysis.n_resamples=1000"],
+            },
         }
         return table.get(stage_id, {}).get("smoke" if smoke else "fast", [])
 
@@ -601,6 +626,15 @@ class Pipeline:
         """
         return self.log_root / stage.entry / "runs" / stage.id
 
+    def summary_path(self, stage_id: str, entry: str, filename: str) -> Path:
+        """:param stage_id: Stage that produced it.
+
+        :param entry: Entry point the stage ran under.
+        :param filename: Summary file name inside the run directory.
+        :return: Where that summary lives in the pinned tree.
+        """
+        return self.log_root / entry / "runs" / stage_id / filename
+
     def read_summary(self, stage_id: str, entry: str, filename: str) -> Optional[Dict[str, Any]]:
         """Read an analysis summary written by a previous stage.
 
@@ -609,7 +643,7 @@ class Pipeline:
         :param filename: Summary file name inside the run directory.
         :return: The parsed summary, or ``None`` if it is not there.
         """
-        path = self.log_root / entry / "runs" / stage_id / filename
+        path = self.summary_path(stage_id, entry, filename)
         if path in self._summary_cache:
             return self._summary_cache[path]
         if not path.is_file():
@@ -681,10 +715,37 @@ class Pipeline:
         """:return: The loss Step 14 selected, or the ``--loss`` override."""
         if self.args.loss:
             return self.args.loss
-        summary = self.read_summary(
-            "step14_loss_selection", "analyze", "step14_loss_selection_summary.json"
-        )
+        summary = self.read_summary(*STEP14_SUMMARY)
         return str(summary["selected_loss"]) if summary else None
+
+    def loss_provenance(self, prefix: str) -> List[str]:
+        """Hand Step 14's actual choice to an analysis that must match Step 15.
+
+        Step 15 has no fixed loss - :meth:`selected_loss` reads Step 14's summary at run
+        time and the stage emits ``loss@model.criterion=<name>``. Any analysis that
+        retrains something to compare against Step 15 has to resolve the loss from the
+        same place, or it trains on a different objective and nothing in the run says so.
+
+        The *summary path* is passed rather than the resolved name, so Step 14 stays the
+        source of truth and the analysis records where the loss came from. ``--loss``
+        takes precedence, exactly as it does for Step 15, so the two cannot disagree.
+
+        :param prefix: Config prefix the keys hang off.
+        :return: Overrides naming the loss, or the summary that decides it.
+        :raises StageFailed: If Step 14 has neither run nor been overridden.
+        """
+        if self.args.loss:
+            return [f"{prefix}loss={self.args.loss}"]
+
+        path = self.summary_path(*STEP14_SUMMARY)
+        if not path.is_file():
+            raise StageFailed(
+                "the control must train with the loss Step 15 used, and Step 14 is what "
+                f"decides it: {path} is missing. Run step14_loss_selection first, or pass "
+                "--loss. Proceeding would compare against a control trained on an "
+                "unverified objective."
+            )
+        return [f"{prefix}loss_summary={path.as_posix()}"]
 
     def branch_ckpt(self, stage_id: str) -> Optional[str]:
         """:param stage_id: A training stage id.
@@ -1357,6 +1418,73 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
         )
     )
 
+    # -- Step 19: explainability ------------------------------------------------------------
+    # Read-only: it loads the finalized checkpoints and explains them. Nothing is trained
+    # and no selection is made, so it cannot influence any result that precedes it. The
+    # recipe override matters - Grad-CAM must be shown the images the model was trained on.
+    def _explain(p: Pipeline) -> Optional[List[str]]:
+        return [
+            "analysis=step19_explainability",
+            *_pipeline_ckpts(p, prefix="analysis."),
+            *p.recipe_override(),
+            *p.loader_overrides(),
+            *p.analysis_shape("step19_explainability"),
+        ]
+
+    add(
+        Stage(
+            "step19_explainability",
+            "analyze",
+            _explain,
+            group="step19",
+            note="Grad-CAM, attention rollout, SHAP and MC-dropout on the final model",
+        )
+    )
+
+    # -- Step 20: quantum advantage ---------------------------------------------------------
+    # The only stage that retrains anything after Step 15, so it is the only one that has to
+    # be told which loss Step 15 used. `loss_provenance` refuses to build the stage if
+    # Step 14 has not run, because a control trained on an unverified objective produces a
+    # quantum-advantage number that cannot be defended.
+    def _advantage(p: Pipeline) -> Optional[List[str]]:
+        # Only the fusion checkpoint: the branches reach this stage through the feature
+        # cache, so its config carries no classical or quantum checkpoint key. The seed is
+        # seeds[0], the same fixed seed every other evaluation stage reads, which is what
+        # makes a single-seed control the matching comparison rather than a lucky one.
+        fusion = p.branch_ckpt(f"step15_final/seed_{p.seeds[0]}")
+        if not fusion:
+            raise StageFailed("missing trained checkpoints for: fusion_ckpt")
+        overrides = [
+            "analysis=step20_quantum_advantage",
+            f"analysis.tag={p.tag}",
+            f"analysis.fusion_ckpt={fusion}",
+            *p.loss_provenance("analysis."),
+            *p.loader_overrides(),
+            *p.analysis_shape("step20_quantum_advantage"),
+        ]
+        # Training time and peak memory for the efficiency table, from the runs that
+        # recorded them. Set key by key: a dict literal would have to survive Hydra's
+        # override grammar with paths inside it.
+        for label, stage_id in (
+            ("classical", f"step10_classical/seed_{p.seeds[0]}"),
+            ("quantum", f"step12_adaptive_quantum/seed_{p.seeds[0]}"),
+            ("fusion", f"step15_final/seed_{p.seeds[0]}"),
+        ):
+            run_dir = p.branch_ckpt(stage_id)
+            if run_dir:
+                overrides.append(f"++analysis.run_dirs.{label}={run_dir}")
+        return overrides
+
+    add(
+        Stage(
+            "step20_quantum_advantage",
+            "analyze",
+            _advantage,
+            group="step20",
+            note="retrained no-quantum control, efficiency table and separability",
+        )
+    )
+
     return stages
 
 
@@ -1459,8 +1587,18 @@ HEADLINES: Dict[str, Sequence[str]] = {
     "step17_external_summary.json": (
         "restricted.macro_f1",
         "unrestricted.macro_f1",
-        "drop",
+        "restriction_effect_macro_f1",
         "predicted_absent_class_count",
+    ),
+    "step20_quantum_advantage_summary.json": (
+        "verdict.headline",
+        "verdict.statistically_significant",
+        "verdict.delta_macro_f1",
+        # Which loss the control trained with, and how that was established. A run whose
+        # provenance reads "unverified" is not reportable, and the report should say so
+        # rather than leave it in the log.
+        "loss_provenance.loss",
+        "loss_provenance.source",
     ),
 }
 
@@ -1543,9 +1681,12 @@ def write_report(pipe: Pipeline) -> Path:
             if not picked:
                 continue
             found = True
+            # The full dotted key, not its last component: Step 17 reports a restricted
+            # and an unrestricted macro-F1, and trimming both to "macro_f1" printed the
+            # same label twice with no way to tell which was which.
             lines.append(
                 f"**{name.replace('_summary.json', '')}** — "
-                + ", ".join(f"{k.split('.')[-1]}: `{v}`" for k, v in picked.items())
+                + ", ".join(f"{k}: `{v}`" for k, v in picked.items())
             )
             lines.append("")
     if not found:
