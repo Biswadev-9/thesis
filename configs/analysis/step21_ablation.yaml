@@ -1,0 +1,75 @@
+# Step 21: the A0-A8 + P ablation matrix.
+#
+#   python src/analyze.py analysis=step21_ablation \
+#       analysis.run_root=logs/train/runs/step21_ablation \
+#       analysis.step06_summary=logs/analyze/runs/step06_preprocessing/step06_preprocessing_summary.json \
+#       analysis.step14_summary=logs/analyze/runs/step14_loss_selection/step14_loss_selection_summary.json \
+#       analysis.step16_summary=logs/analyze/runs/step16_internal/step16_internal_summary.json
+#
+# Every row goes through src/analysis/metric_battery.py - the same code Step 16 uses - so
+# an ablation row and the study's headline are directly comparable rather than merely
+# similarly named. Primary metrics are macro-F1 and class-wise recall, as Step 21 states.
+#
+# THE TEST SET INFORMS NOTHING HERE. Checkpoints are chosen by each training run's own
+# val/f1_macro callback; this analysis only reads the file that produced. It does not read
+# the test/* columns that trainer.test() writes into every run's metrics.csv, and no test
+# metric selects a checkpoint, an epoch or a row.
+#
+# Row P is READ from Step 16, not re-evaluated: the shipped model has already spent the
+# once-only test budget, and a second evaluation could contradict the headline.
+#
+# The matrix definition lives in src/analysis/ablation_rows.py, not here, so that tests
+# can assert A6 and A7 differ in the loss and in nothing else.
+
+# The row modules are pulled in from configs/model/ rather than restated here. Restating
+# them is how an evaluation quietly stops matching the thing it evaluates: the first draft
+# of this file hand-copied two net blocks and got both `_target_`s wrong. Weights come
+# from the checkpoint; only the architecture has to agree, and this guarantees it does.
+defaults:
+  - /model@model_defs.branch_classical: branch_classical
+  - /model@model_defs.branch_multiscale: branch_multiscale
+  - /model@model_defs.fixed_qcnn: baseline_fixed_qcnn
+  - /model@model_defs.adaptive_quantum: branch_adaptive_quantum
+  - /model@model_defs.final_classifier: final_classifier
+  - _self_
+
+_target_: src.analysis.ablation_study.AblationStudy
+
+name: step21_ablation
+
+_recursive_: false
+
+# Where the Step 21 training runs live: <run_root>/<row_id>/seed_<n>.
+run_root: logs/train/runs/step21_ablation
+
+# The three summaries the matrix depends on. Step 6 decides which diffusion recipe rows
+# A2-A6 use and which recipe row P describes; Step 14 decides row A7's loss; Step 16 is
+# where row P is read from. All three are paths rather than values, so the earlier steps
+# stay the source of truth.
+step06_summary: null
+step14_summary: null
+step16_summary: null
+
+# Step 15: "Run at least three seeds for the final model and major baselines."
+seeds: [42, 123, 7]
+
+# Hydra model configs used to rebuild each row's module from its checkpoint. Keyed by row
+# id; rows sharing an architecture share a config.
+row_models:
+  A0: ${analysis.model_defs.branch_classical}
+  A1: ${analysis.model_defs.branch_classical}
+  A2: ${analysis.model_defs.branch_classical}
+  A3: ${analysis.model_defs.branch_multiscale}
+  A4: ${analysis.model_defs.fixed_qcnn}
+  A5: ${analysis.model_defs.adaptive_quantum}
+  A6: ${analysis.model_defs.final_classifier}
+  A7: ${analysis.model_defs.final_classifier}
+  A8: ${analysis.model_defs.final_classifier}
+
+n_calibration_bins: 10
+
+# Record a missing row and carry on, rather than losing an eight-row matrix to one absent
+# checkpoint. Set true when the matrix is expected to be complete.
+strict: false
+
+accelerator: auto

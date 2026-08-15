@@ -104,7 +104,7 @@ def test_stage_ids_are_unique():
 
 
 def test_full_profile_covers_every_step():
-    """The graph runs the whole implemented study, Steps 4 through 20."""
+    """The graph runs the whole implemented study, Steps 4 through 23."""
     groups = {s.group for s in kp.build_stages(_pipeline(profile="full"))}
     assert groups == {
         "step04",
@@ -123,6 +123,9 @@ def test_full_profile_covers_every_step():
         "step18",
         "step19",
         "step20",
+        "step21",
+        "step22",
+        "step23",
     }
 
 

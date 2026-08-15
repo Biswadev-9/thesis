@@ -2,8 +2,9 @@
 
 How to run the thesis study from this repository.
 
-**Status: Phases 1–7 implemented — specification Steps 1, 3–20.**
-Steps 21–23 are not built yet; their section below says so explicitly.
+**Status: Phases 1–8 implemented — specification Steps 1, 3–23.**
+Phase 8 (Steps 21–23) is wired and tested but **has not been run**: no ablation row has been
+trained. See §3's Phase 8 section for what that costs before you start.
 
 > This file is updated at the end of every phase. If a command appears here, it has been
 > run and works. If a step is not listed, it is not implemented yet.
@@ -503,11 +504,121 @@ without the quantum block.
 negative result and asks for it honestly, so the verdict is generated from the evidence.
 `run_dirs` pulls training time and peak memory from each run's `resource_usage.json`.
 
-### Steps 21–23 — not implemented yet
+### Steps 21–23 — the ablation ladder, the statistics, and the RQ map
 
-| Steps | What | Phase |
-|---|---|---|
-| 21, 22, 23 | Ablation table A0–A8; RQ mapping; statistics | 8 |
+Phase 8 answers "which component earned its place, and how confidently?". It runs last,
+reads only what the rest of the study produced, and cannot influence any earlier selection.
+
+> **⚠ This is the most expensive part of the study, and it has not been run.**
+> Eight rows × three seeds = 24 training runs. **A4 and A5 execute PennyLane circuits on
+> the CPU simulator** and dominate the wall clock — budget for them the way you budget
+> Step 12, and expect A6/A7 to be cheap by comparison (a small head on cached features).
+> Nothing below has been executed against real data.
+
+#### The A0–A8 + P matrix
+
+| Row | Configuration | Recipe | Loss | Cache | Trains |
+|---|---|---|---|---|---|
+| A0 | Raw image + baseline CNN | raw, `normalize=none` | plain_ce | — | 3 seeds |
+| A1 | Conventional preprocessing + CNN | conventional | plain_ce | — | 3 |
+| A2 | Diffusion preprocessing + CNN | diffusion | plain_ce | — | 3 |
+| A3 | Diffusion + adaptive multiscale branch | diffusion | plain_ce | — | 3 |
+| A4 | Diffusion + fixed QCNN branch | diffusion | plain_ce | — | 3 ⚠ |
+| A5 | Diffusion + adaptive quantum branch | diffusion | plain_ce | — | 3 ⚠ |
+| A6 | Diffusion + multiscale + quantum + fusion | diffusion | **plain_ce** | `a6_diffusion` | 3 |
+| A7 | Core model + imbalance-aware loss | diffusion | **Step 14's** | `a6_diffusion` | 3 |
+| A8 | Core model + explainability and uncertainty | = A7 | = A7 | = A7 | **0** |
+| **P** | **The shipped model** | **Step 6's choice (clahe)** | Step 14's | `default` | **0** |
+
+Three rules the matrix encodes, each enforced by a test:
+
+- **A6 is not the proposed model.** The specification writes "Diffusion" into A2–A6, but
+  Step 6 selected CLAHE on measurement, so the shipped model is CLAHE-based. Both are
+  represented: the specification's ladder as written, and row **P** for what the study
+  ships. A7-vs-P is the end-to-end preprocessing comparison Step 6's own proxy caveat asks
+  for.
+- **A6 uses plain CE so A7 measures something.** If A6 already carried Step 14's loss the
+  two rows would be identical and their delta zero by construction.
+- **A8 is identical to A7 by construction.** Explanations change no weights, so A8 trains
+  nothing, is not re-evaluated, and receives no performance delta. Its contribution is
+  Step 19's deletion/insertion and MC-dropout output.
+
+Each row pins its own recipe, normalization, augmentation, sampler and loss. Unlike every
+other training stage, A-rows do **not** inherit Step 6's recipe or Step 8's imbalance
+selection — otherwise a row labelled "diffusion" would train on whatever won Step 6.
+
+#### The flow
+
+```
+A0 → A1 → A2 → A3 → A4 → A5 → [features: a6_diffusion] → A6 → A7
+                                                                ↓
+                                                    Step 21  evaluation
+                                                                ↓
+                                                    Step 23  statistics
+                                                                ↓
+                                                    Step 22  RQ mapping
+```
+
+```bash
+# Composition only - builds every Phase 8 stage and prints it, running nothing:
+python scripts/kaggle_pipeline.py --list --only step21,step22,step23
+
+# The real thing, once you have the budget (see the warning above):
+python scripts/kaggle_pipeline.py --profile full --from step21_materialise_diffusion
+```
+
+**Step 21** evaluates each row's *validation-selected* checkpoint on the internal test set,
+using the same metric battery as Step 16 so the numbers are directly comparable. It never
+reads the `test/*` columns that `trainer.test()` writes into each training run's
+`metrics.csv`. Row **P** is read from Step 16's summary rather than re-evaluated — the
+shipped model has already spent the once-only test budget its lock protects.
+
+**Step 23** applies **Holm–Bonferroni across exactly four pre-registered hypotheses**:
+
+| | comparison | isolates | RQ |
+|---|---|---|---|
+| H1 | A2 vs A1 | diffusion vs conventional preprocessing | RQ2 |
+| H2 | A5 vs A4 | adaptive vs fixed circuits | RQ4 |
+| H3 | A7 vs A6 | imbalance-aware loss | RQ6 |
+| H4 | A6 vs A3 | quantum + fusion over multiscale alone | RQ8 |
+
+Everything else — A1-vs-A0, A3-vs-A2, A7-vs-P, the full ladder — is **descriptive**: an
+effect size and a 95% interval, no p-value, `significant: null` rather than `false`, because
+there is no claim rather than a claim of no effect. Testing every row against A6 instead
+would be eight hypotheses chosen after seeing the table, and a correction applied to a
+family assembled that way controls nothing.
+
+> **P is single-seed.** Step 16 evaluated one checkpoint by design, so P has no estimable
+> spread and no variance is imputed for it. A7-vs-P is descriptive, and — because Step 21
+> writes no prediction file for P — is reported as a difference of point estimates with no
+> interval. Pass `analysis.step16_predictions=<step16 run>/test_predictions.npz` to get a
+> paired descriptive interval without any new evaluation.
+
+> **Three seeds describe; they do not test.** A two-sided Wilcoxon over three pairs has a
+> floor of p = 0.25 and cannot reach significance at any effect size, so it is refused below
+> six pairs. The powered paired test is the bootstrap over the ~1000 test samples.
+
+**Step 22** maps RQ1–RQ10 onto the artefacts that answer them, with every value carrying the
+path it came from. It computes nothing and reaches no verdict Steps 21 and 23 have not
+already reached. Evidence the dataset cannot supply is listed with a null value and a
+reason — never omitted, never approximated:
+
+- **RQ5 is metadata-limited.** The dataset ships no tumour-size or appearance annotations,
+  so subgroup performance is not assessable. Only class-wise metrics are reported.
+- **RQ1's baseline coverage is partial.** Only EfficientNet-B0 and ViT appear in a permitted
+  artefact (Step 18's clean scores); the other five Step 9 baselines recorded test metrics
+  only in their training `metrics.csv`, which Step 22 does not read.
+- **RQ3 has no masks**, so Grad-CAM localization is assessed by deletion/insertion rather
+  than against annotated boundaries.
+
+#### Output namespace
+
+Phase 8 writes under `logs/train/runs/step21_ablation/<row>/seed_<n>` and
+`logs/analyze/runs/{step21_ablation,step23_statistics,step22_rq_mapping}`, plus the
+`a6_diffusion` feature cache. It writes nowhere else. The shipped result bundles
+(`thesis_results_20260813_090056/`, `thesis_results_20260814_075721/`) are immutable
+evidence and are never written to or deleted — a test asserts no Phase 8 stage resolves a
+path inside them.
 
 ---
 
@@ -712,4 +823,5 @@ mid-range GPU. The proxy studies (Steps 6 and 8) are CPU-feasible at 10–25 min
 | 5 | 13, 14, 15 | Feature cache, three fusion strategies, final classifier, branch-contribution ablation, validation-only loss selection, calibration metrics |
 | 6 | 16, 17, 18 | Full metric battery with once-only test lock, Figshare external validation, degradation sweep, full image-to-logits pipeline |
 | 7 | 19, 20 | Grad-CAM, ViT attention rollout, SHAP, MC-dropout, deletion/insertion, paired bootstrap + McNemar, efficiency and separability |
-| — | 4–20 | `scripts/kaggle_pipeline.py` and `notebooks/kaggle_run.ipynb`: the whole study as one resumable command, plus the Kaggle Run-All notebook around it (§6). Steps 19 and 20 run automatically at the end of the graph, and Step 20 is handed Step 14's loss selection rather than depending on someone remembering to pass it. Fixed `train.yaml`/`eval.yaml` still defaulting to the deleted `data/mnist` config. |
+| 8 | 21, 22, 23 | A0–A8 + P ablation matrix with per-row pinned settings, Step 21 evaluation on the shared Step 16 metric battery, Holm-corrected four-hypothesis family, RQ1–RQ10 evidence map. Wired into the runner; **not yet run** |
+| — | 4–23 | `scripts/kaggle_pipeline.py` and `notebooks/kaggle_run.ipynb`: the whole study as one resumable command, plus the Kaggle Run-All notebook around it (§6). Steps 19–23 run at the end of the graph; Step 20 is handed Step 14's loss selection, and the Phase 8 rows are handed their own pinned settings rather than the study's running selections. Fixed `train.yaml`/`eval.yaml` still defaulting to the deleted `data/mnist` config. |

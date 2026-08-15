@@ -807,6 +807,212 @@ study was given. Two tests record what is passed through and assert it matches.
 
 ---
 
+## Phase 8 — ablation, RQ mapping and statistics (Steps 21, 22, 23)
+
+### D32 — A2-A6 keep diffusion, and row P is added for the shipped model · `done`
+
+**Specification** Step 21 writes "Diffusion" into rows A2-A6, and A6 reads as the full
+proposed model.
+
+**Reality** Step 6 selected CLAHE on measurement (clahe 0.257, `diffusion_i10_k15` 0.247,
+conventional 0.100), so the model the study ships is CLAHE-based. Taken literally the
+ablation ladder terminates at a configuration the study does not ship.
+
+**Now** Both are represented. A2-A6 stay on diffusion exactly as written, and a tenth row
+**P** carries the shipped model. Substituting the selection into A2-A6 would have deleted
+the study's diffusion evidence while leaving the labels claiming it; substituting diffusion
+into P would have misreported what was trained.
+
+The gap is useful rather than awkward. Step 6's own summary carries the caveat that its
+ranking comes from "a reduced-scale proxy (SmallCNN, 128px, 24 images/class)" and "should
+be confirmed with the real backbone on the full validation split". A7 against P is that
+confirmation, at full scale. It is reported descriptively, not as a hypothesis test.
+
+Which diffusion configuration is read from Step 6's `ranking`, not hard-coded, so a better
+variant cannot be silently ignored.
+
+### D33 — A6 uses plain CE so that A7 measures something · `done`
+
+A7 reads "core model + imbalance-aware loss". The core model already carries the loss
+Step 14 selected, so as literally specified A7 and A6 are the same configuration and their
+delta is zero by construction - a number that looks like evidence and is not. A6 is
+therefore pinned to `plain_ce` and A7 to whatever Step 14 selected, making H3 a real
+comparison. This defines the ablation rows; **Step 15 is untouched** and still trains with
+Step 14's selection.
+
+### D34 — A8 gets no fabricated performance delta · `done`
+
+Explanations change no weights, so A8's classification metrics are A7's *by construction*.
+Step 21 mirrors A7's record rather than recomputing it - re-running would be identical
+arithmetic at twice the cost and a second read of the test set - and Step 23 excludes A8
+from testing entirely. Its statistical contribution is Step 19's deletion/insertion and
+MC-dropout output, which are not classification metrics.
+
+### D35 — Ablation rows pin their own settings instead of inheriting selections · `done`
+
+Every training stage in `scripts/kaggle_pipeline.py` applies `recipe_override()` and
+`imbalance_overrides()`, injecting Step 6's and Step 8's *selections*. The real run confirms
+it: Step 9's EfficientNet trained with `data.recipe=clahe`, not the `recipe: null` its
+experiment config declares. That is right for the main study and wrong for an ablation - a
+row would be labelled "diffusion" and trained on whatever won Step 6, and would change
+silently when Step 6 was re-run.
+
+Each row therefore pins recipe, normalization, augmentation, sampler and loss explicitly.
+`augment=false` and `use_weighted_sampler=false` are pinned literals matching the observed
+Step 8 `baseline` selection; if a full-profile Step 8 selects otherwise the rows do **not**
+follow it, and the conflict is reported rather than applied.
+
+Consequence worth stating: no existing Step 9-12 checkpoint satisfies any A-row, because
+all of them were trained on CLAHE. A0-A7 are new runs.
+
+### D36 — The primary hypothesis family is pre-registered, and small · `done`
+
+**Specification** Step 23 asks for McNemar, paired bootstrap and confidence intervals, and
+warns against overstating minor improvements. It does not say which comparisons are
+hypotheses.
+
+**Now** Four, each isolating exactly one factor, declared in
+`configs/analysis/step23_statistics.yaml` before any of them is computed:
+
+| | comparison | isolates | RQ |
+|---|---|---|---|
+| H1 | A2 vs A1 | diffusion vs conventional preprocessing | RQ2 |
+| H2 | A5 vs A4 | adaptive vs fixed circuits | RQ4 |
+| H3 | A7 vs A6 | imbalance-aware loss | RQ6 |
+| H4 | A6 vs A3 | quantum + fusion over multiscale alone | RQ8 |
+
+Holm-Bonferroni across the four at alpha=0.05. Testing every row against A6 instead would
+be eight hypotheses chosen after seeing the table, and a correction applied to a family
+assembled that way controls nothing. `_check_family` refuses a configured family that
+differs from the registered one, because the family size scales every adjusted p-value.
+
+Everything else - A1 vs A0, A3 vs A2, A7 vs P, the full ladder, A8 - is descriptive: an
+effect size and an interval, no p-value, `significant: null` rather than `false`, because
+there is no claim rather than a claim of no effect.
+
+### D37 — Three seeds describe; the bootstrap tests · `done`
+
+Step 23 permits Wilcoxon "for repeated fold/seed comparisons", but a two-sided Wilcoxon over
+three pairs has a floor of p=0.25 and cannot reach significance at any effect size - the
+same defect F12 fixed for Step 20. Seed spread is reported as mean and standard deviation
+and explicitly marked `role: descriptive`; the powered paired test is the bootstrap over
+the ~1000 test samples, which is where the resolution actually is. `wilcoxon_paired`
+refuses below six pairs and returns the reason instead of a p-value.
+
+Every primary comparison reports **both** its raw and its Holm-adjusted p-value, and the
+verdict uses the adjusted one. The p-value is McNemar's, over discordant errors, while the
+effect size and interval are macro-F1 - different questions, so `p_value_source` and an
+`interpretation` field say so rather than letting the two be conflated.
+
+### D38 — Pairing is verified rather than assumed · `done`
+
+H4 pairs A6, whose predictions come through the feature cache, with A3, whose come through
+the image loader. Both use `shuffle=False` and preserve test order today, so the pairing is
+valid - but a paired test over misaligned samples returns a confident wrong p-value rather
+than an error, which is exactly the failure that survives review. The two label vectors are
+compared element-wise before anything is computed, and a mismatch is refused.
+
+### D39 — Row P has no saved predictions, and none are invented · `open`
+
+Step 21 reports P from Step 16's summary rather than re-evaluating it, which is what keeps
+the once-only test budget intact - so no prediction file exists for P and there is nothing
+to resample. A7-vs-P therefore degrades to a **metrics-only** comparison: a difference of
+point estimates, with `ci_low`/`ci_high` null and the reason recorded.
+
+Step 16 did save its own `test_predictions.npz`, so a paired descriptive interval is
+available without any new evaluation. That is exposed as `analysis.step16_predictions` and
+left **off by default**, because reading it consumes an artefact from outside Step 21 -
+a scope decision rather than a technical one. Either way P stays single-seed and the
+comparison stays descriptive.
+
+Related: P is single-seed by Step 16's design while the A-rows are three-seed. No variance
+is imputed for it - `seed_spread` is `None`, meaning "not estimable", not zero.
+
+### D40 — The Step 16 metric battery is shared, not reimplemented · `done`
+
+Step 21 must "report the same metrics for every configuration", and *same* has to mean the
+same code: two implementations that agree today drift the first time one changes a
+zero-division policy or an averaging mode, and the table would then compare numbers that
+only look alike. `src/analysis/metric_battery.py` holds the arithmetic and both
+`InternalTest` and the ablation call it. Step 16's output was captured before the
+refactor and re-checked after: byte-identical.
+
+### D41 — RQ5 is metadata-limited, and says so · `done`
+
+**Specification** RQ5: *"Analyze performance by tumor size/appearance if metadata or masks
+are available."*
+
+The dataset ships neither. No tumour-size annotation, no appearance label, no segmentation
+mask - so the subgroup half of RQ5 is not assessable, and the tempting move is to
+substitute a proxy (lesion area from a threshold, say) that nobody asked for and that would
+be reported as though it answered the question.
+
+**Now** Step 22 lists the absent evidence as a row with a null value and a stated reason,
+and RQ5's status is `partially_supported` with an explicit limitation. Class-wise metrics,
+which *are* available, are reported as the half of the question the data can answer.
+
+RQ3 is limited the same way: with no masks, Grad-CAM localization is assessed by
+deletion/insertion sanity checks rather than against annotated boundaries.
+
+### D42 — RQ1's baseline coverage is partial, and stated · `open`
+
+RQ1 asks for the proposed model against "all baselines". Only two of the seven Step 9
+baselines - EfficientNet-B0 and ViT - appear in an artefact Step 22 is permitted to read,
+via Step 18's clean scores. The other five recorded their test metrics only in their
+training runs' `metrics.csv`, and `test: True` in `configs/train.yaml` means those columns
+exist for every run.
+
+Harvesting them would be one line and would make RQ1 look complete. It is refused: a number
+whose provenance is a training log cannot be audited, and mixing harvested values with
+Step 21's freshly computed ones would make the table's numbers incomparable. RQ1 therefore
+carries the limitation instead. Closing it means either extending the ablation ladder to
+the remaining baselines or having Step 16 evaluate them - both cost test-set reads, and
+both are scope decisions rather than fixes.
+
+### D43 — Ablation rows do not inherit the study's running selections · `done`
+
+Every training stage in `scripts/kaggle_pipeline.py` applies `recipe_override()` and
+`imbalance_overrides()`, which inject Step 6's and Step 8's selections. The real run shows
+the mechanism plainly: Step 9's EfficientNet trained with `data.recipe=clahe` although its
+experiment config declares `recipe: null`.
+
+That is right for the main study and wrong for an ablation. A row whose label reads
+"diffusion" would train on whatever won Step 6, and the label would still read "diffusion"
+in the final table. Phase 8's rows therefore bypass `_train_builder` entirely and emit
+`row_overrides(...)` from the manifest, pinning recipe, normalization, augmentation,
+sampler and loss per row. Twenty-four orchestration tests compose each row under Hydra and
+assert the pinned values; perturbing the runner to re-apply either helper fails 17-24 of
+them.
+
+Consequence: no existing Step 9-12 checkpoint satisfies any A-row, because all of them were
+trained on CLAHE. A0-A7 are new runs - 24 of them, of which A4 and A5 run circuits on the
+CPU simulator.
+
+### D44 — Phase 8 writes to its own namespace; the result bundles are immutable · `done`
+
+Phase 8 outputs live under `logs/train/runs/step21_ablation/<row>/seed_<n>`,
+`logs/analyze/runs/{step21_ablation,step23_statistics,step22_rq_mapping}` and the
+`a6_diffusion` feature cache. The two shipped result bundles - `thesis_results_20260813_090056/`
+and `thesis_results_20260814_075721/` - are the study's record of what was actually run, and
+are never written to, overwritten or deleted. A test resolves every Phase 8 stage's output
+directory and asserts none falls inside them; pointing the namespace at a bundle fails 69
+tests.
+
+### D45 — The runner points at the analyses rather than reimplementing them · `done`
+
+Steps 21, 22 and 23 are wired as three stages whose ordering encodes their dependencies:
+the eight rows, then evaluation, then statistics, then the RQ map. Each refuses to build
+when its inputs are absent - Step 21 lists the missing checkpoints, Step 23 names Step 21,
+Step 22 names Step 23 - so a partial run fails at the stage that is missing something rather
+than producing a thinner table downstream.
+
+The Holm correction, the hypothesis family and the RQ bindings stay in the analyses. A test
+parses the runner's AST and asserts it imports no `scipy`/`sklearn` and calls none of the
+statistical primitives: the one thing it imports from `src/` is the row manifest, and only
+to emit overrides from it.
+
+---
+
 ## Environment and template repairs
 
 These are not methodological, but they changed files and are recorded for traceability.

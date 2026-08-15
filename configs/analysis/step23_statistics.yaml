@@ -1,0 +1,114 @@
+# Step 23: consolidated statistical reporting over the Step 21 ablation.
+#
+#   python src/analyze.py analysis=step23_statistics \
+#       analysis.ablation_dir=logs/analyze/runs/step21_ablation
+#
+# Reads the predictions Step 21 saved and turns them into claims. It trains nothing, loads
+# no checkpoint, and reads no training metrics.csv - the only inputs are Step 21's summary
+# and its per-row prediction files, all of which came from validation-selected checkpoints.
+#
+# THE PRIMARY FAMILY IS A PRE-REGISTRATION. It is declared below, in full, so it can be
+# read before any result is computed - and the code refuses a family that differs from the
+# one registered in src/analysis/statistical_report.py. The family size scales every
+# adjusted p-value, so adding a member after seeing the table would change every verdict
+# and the correction would control nothing.
+#
+# Everything outside these four is descriptive: an effect size and an interval, no p-value
+# and no significance claim.
+
+_target_: src.analysis.statistical_report.StatisticalReport
+
+name: step23_statistics
+
+_recursive_: false
+
+# Step 21's output directory: its summary plus step21_predictions_<row>_seed<n>.npz.
+ablation_dir: null
+
+# --- the pre-registered primary family -------------------------------------------------
+# Four comparisons, each isolating exactly one factor, forming ONE multiplicity family.
+# Deliberately NOT "every A-row against A6": eight comparisons chosen after seeing the
+# table are not a family, and Holm over them controls nothing.
+primary_comparisons:
+  - id: H1
+    row_a: A2
+    row_b: A1
+    rq: RQ2
+    question: "Does diffusion preprocessing beat the conventional Step 5 pipeline?"
+
+  - id: H2
+    row_a: A5
+    row_b: A4
+    rq: RQ4
+    question: "Does the adaptive quantum branch beat a fixed QCNN?"
+
+  - id: H3
+    row_a: A7
+    row_b: A6
+    rq: RQ6
+    question: "Does the imbalance-aware loss Step 14 selected help?"
+
+  - id: H4
+    row_a: A6
+    row_b: A3
+    rq: RQ8
+    question: "Does adding the quantum branch and fusion beat the multiscale branch alone?"
+
+# --- descriptive comparisons -----------------------------------------------------------
+# Reported with an effect size and a 95% interval, never with a p-value. A7 vs P is the
+# end-to-end preprocessing comparison Step 6's proxy caveat asks for, but P is single-seed
+# (Step 16 evaluated one checkpoint by design), so it cannot carry a seed-level claim.
+secondary_comparisons:
+  - id: A1_vs_A0
+    row_a: A1
+    row_b: A0
+    note: "Intensity treatment alone. Descriptive: not a pre-registered hypothesis."
+
+  - id: A3_vs_A2
+    row_a: A3
+    row_b: A2
+    note: >-
+      Adaptive multiscale against the CNN. Confounded - the backbone changes as well as the
+      module - so descriptive only.
+
+  - id: A7_vs_P
+    row_a: A7
+    row_b: P
+    note: >-
+      End-to-end preprocessing comparison: A7 is diffusion, P is what Step 6 selected. P is
+      single-seed, so this carries no seed-level claim and is reported descriptively.
+
+# --- statistical parameters ------------------------------------------------------------
+# Family-wise error rate for the Holm correction.
+alpha: 0.05
+
+confidence_level: 0.95
+
+# Matches Step 20's convention and src/utils/statistics.py's default; changing it changes
+# only the interval's resolution, not the estimate.
+n_resamples: 2000
+
+# Every resampling procedure is seeded from here, so the report is reproducible.
+random_seed: 42
+
+# Which training seed the paired tests read. Fixed rather than best-of-three, matching how
+# every other stage in the study picks its checkpoint.
+paired_seed: 42
+
+# Below this many pairs a two-sided Wilcoxon cannot reach p < 0.05 at any effect size, so
+# it is refused rather than reported. With three seeds the floor is 0.25. Mirrors
+# MIN_WILCOXON_PAIRS in src/utils/statistics.py.
+minimum_wilcoxon_pairs: 6
+
+# Step 16's own saved predictions, enabling a PAIRED descriptive interval for A7 vs P.
+# Off by default: Step 21 writes no prediction file for P - it reports the shipped model
+# from Step 16's summary rather than re-evaluating it, which is what keeps the once-only
+# test budget intact - so without this A7-vs-P is a difference of point estimates with no
+# interval. Supplying it consumes an artefact from outside Step 21 and performs no new
+# evaluation; it stays a descriptive comparison either way, because P is single-seed.
+#
+#   analysis.step16_predictions=logs/analyze/runs/step16_internal/test_predictions.npz
+step16_predictions: null
+
+# Report a missing seed and carry on. Set true when the matrix is expected to be complete.
+strict: false

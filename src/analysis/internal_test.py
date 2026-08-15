@@ -28,26 +28,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import (
-    accuracy_score,
-    balanced_accuracy_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    matthews_corrcoef,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 
+from src.analysis import metric_battery as battery
 from src.analysis.base import Analysis
 from src.models.full_pipeline import load_full_pipeline, predict
 from src.utils import RankedLogger
-from src.utils.metrics import (
-    expected_calibration_error,
-    multiclass_brier_score,
-    specificity_per_class,
-)
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
@@ -226,34 +211,7 @@ class InternalTest(Analysis):
         :param class_names: Class names ordered by label index.
         :return: Metric mapping.
         """
-        labels = list(range(len(class_names)))
-        confusion = confusion_matrix(y_true, y_pred, labels=labels)
-        specificity = specificity_per_class(confusion, class_names)
-
-        metrics = {
-            "accuracy": float(accuracy_score(y_true, y_pred)),
-            "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
-            "macro_precision": float(precision_score(y_true, y_pred, average="macro", zero_division=0)),
-            # Macro recall is sensitivity; named both ways because Step 16 lists both.
-            "macro_recall_sensitivity": float(recall_score(y_true, y_pred, average="macro", zero_division=0)),
-            "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
-            "weighted_f1": float(f1_score(y_true, y_pred, average="weighted", zero_division=0)),
-            "macro_specificity": float(np.mean(list(specificity.values()))),
-            "mcc": float(matthews_corrcoef(y_true, y_pred)),
-        }
-
-        try:
-            one_hot = np.eye(len(class_names))[y_true]
-            metrics["auc_ovr_macro"] = float(
-                roc_auc_score(one_hot, y_prob, average="macro", multi_class="ovr")
-            )
-        except ValueError as error:
-            # Undefined when a class is absent from the split, which should not happen on
-            # a stratified test set but must not crash the report if it does.
-            log.warning(f"AUC could not be computed: {error}")
-            metrics["auc_ovr_macro"] = None
-
-        return metrics
+        return battery.overall_metrics(y_true, y_pred, y_prob, class_names)
 
     def _per_class(
         self, y_true: np.ndarray, y_pred: np.ndarray, class_names: List[str]
@@ -265,26 +223,7 @@ class InternalTest(Analysis):
         :param class_names: Class names ordered by label index.
         :return: One record per class.
         """
-        labels = list(range(len(class_names)))
-        report = classification_report(
-            y_true, y_pred, labels=labels, target_names=class_names, output_dict=True, zero_division=0
-        )
-        specificity = specificity_per_class(confusion_matrix(y_true, y_pred, labels=labels), class_names)
-
-        rows = []
-        for name in class_names:
-            entry = report[name]
-            rows.append(
-                {
-                    "class_name": name,
-                    "precision": float(entry["precision"]),
-                    "recall_sensitivity": float(entry["recall"]),
-                    "f1": float(entry["f1-score"]),
-                    "specificity": float(specificity[name]),
-                    "support": int(entry["support"]),
-                }
-            )
-
+        rows = battery.per_class_table(y_true, y_pred, class_names)
         self.save_table(pd.DataFrame(rows), "step16_per_class.csv")
         return rows
 
@@ -302,22 +241,14 @@ class InternalTest(Analysis):
         :param class_names: Class names ordered by label index.
         :return: Matrix and ranked confusion pairs.
         """
-        labels = list(range(len(class_names)))
-        matrix = confusion_matrix(y_true, y_pred, labels=labels)
+        summary = battery.confusion_summary(y_true, y_pred, class_names)
+        matrix = np.asarray(summary["matrix"])
 
         frame = pd.DataFrame(matrix, index=class_names, columns=class_names)
         self.save_table(frame, "step16_confusion_matrix.csv", index=True)
         self._plot_confusion(matrix, class_names)
 
-        pairs = [
-            {"true": class_names[i], "predicted": class_names[j], "count": int(matrix[i, j])}
-            for i in range(len(class_names))
-            for j in range(len(class_names))
-            if i != j and matrix[i, j] > 0
-        ]
-        pairs.sort(key=lambda row: -row["count"])
-
-        return {"matrix": matrix.tolist(), "class_names": class_names, "top_confusions": pairs[:6]}
+        return summary
 
     def _calibration(
         self, y_true: np.ndarray, y_prob: np.ndarray, class_names: List[str]
@@ -329,19 +260,11 @@ class InternalTest(Analysis):
         :param class_names: Class names ordered by label index.
         :return: Calibration metrics plus the count of confidently-wrong predictions.
         """
-        ece, bins = expected_calibration_error(y_true, y_prob, self.n_calibration_bins)
-        self.save_table(bins, "step16_calibration_bins.csv")
-
-        confident_wrong = int(
-            np.sum((y_prob.max(axis=1) > 0.99) & (y_prob.argmax(axis=1) != y_true))
+        metrics = battery.calibration_metrics(
+            y_true, y_prob, class_names, self.n_calibration_bins
         )
-
-        return {
-            "expected_calibration_error": ece,
-            "brier_score": multiclass_brier_score(y_true, y_prob, len(class_names)),
-            # The specific pathology the notebook found: near-certain and wrong.
-            "confidently_wrong_over_0.99": confident_wrong,
-        }
+        self.save_table(metrics.pop("bins"), "step16_calibration_bins.csv")
+        return metrics
 
     # ------------------------------------------------------------------ output
 

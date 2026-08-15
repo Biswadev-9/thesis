@@ -1,0 +1,315 @@
+# Step 22: research question to experiment mapping.
+#
+#   python src/analyze.py analysis=step22_rq_mapping \
+#       analysis.analyze_root=logs/analyze/runs
+#
+# Step 22 answers one question - "for each RQ, what existing experiment supplies evidence?"
+# - and nothing else. It computes no metric, runs no test, and reaches no verdict Steps 21
+# and 23 have not already reached. Every value in its table is read from an artefact on
+# disk and carries the path it came from.
+#
+# The `question`, `spec_experiment` and `spec_evidence` fields below are the specification's
+# own words, copied from the Step 22 table in docs/Instruction BY asif vai.md. A test parses
+# that table out of the specification file and compares it against this config, so a
+# paraphrase that drifts fails the suite rather than the write-up.
+#
+# EVIDENCE BINDINGS. Each entry names where evidence comes from, never what it says:
+#
+#   kind: step23_comparison   ref: H1..H4          -> a Holm-corrected primary hypothesis
+#   kind: step23_comparison   ref: A1_vs_A0 etc.   -> a descriptive comparison
+#   kind: step21_row          ref: A0..A8 | P      -> one ablation row's metrics
+#   kind: step21_ladder                            -> every ablation row, in order
+#   kind: stage_summary       ref: step17_external -> an earlier analysis's summary
+#   kind: absent              ref: <name>          -> evidence that does not exist, declared
+#
+# `role: primary` may only be used with a step23_comparison that Step 23 itself classifies
+# as a primary family member. Declaring it for a descriptive comparison is refused, because
+# that is exactly how four corrected hypotheses quietly become eight uncorrected ones.
+
+_target_: src.analysis.rq_mapping.RQMapping
+
+name: step22_rq_mapping
+
+_recursive_: false
+
+# Root holding one directory per analysis stage, each with its <stage>_summary.json.
+analyze_root: logs/analyze/runs
+
+research_questions:
+  - id: RQ1
+    question: Improve multiclass classification
+    spec_experiment: Compare proposed model with all baselines on internal and external test sets.
+    spec_evidence: Macro-F1, balanced accuracy, class-wise recall.
+    evidence:
+      - kind: stage_summary
+        ref: step16_internal
+        role: secondary
+        interpretation: >-
+          The shipped model's internal test result. This is the study's headline claim, from
+          the single evaluation Step 16 is permitted.
+      - kind: stage_summary
+        ref: step17_external
+        role: secondary
+        interpretation: >-
+          The shipped model on the external dataset, which is the second half of "internal
+          and external test sets".
+      - kind: stage_summary
+        ref: step18_robustness
+        key: clean_scores
+        role: secondary
+        interpretation: >-
+          The shipped model against the EfficientNet-B0 and ViT baselines on undegraded
+          data. Two of the seven Step 9 baselines - see the limitation.
+      - kind: step21_row
+        ref: P
+        role: secondary
+        interpretation: The shipped model as it appears in the ablation ladder.
+    limitations:
+      - >-
+        Only two of the seven Step 9 baselines (EfficientNet-B0, ViT) appear in a permitted
+        artefact, via Step 18's clean scores. The other five recorded their test metrics
+        only in their training runs' metrics.csv, which Step 22 does not read, so "all
+        baselines" is not fully evidenced here.
+
+  - id: RQ2
+    question: Diffusion preprocessing
+    spec_experiment: Compare no preprocessing, conventional preprocessing, and diffusion preprocessing.
+    spec_evidence: Image quality, macro-F1, robustness under noise.
+    evidence:
+      - kind: step23_comparison
+        ref: H1
+        role: primary
+        interpretation: >-
+          Diffusion against conventional preprocessing, the pre-registered test of this
+          question. Holm-corrected within the four-member primary family.
+      - kind: step23_comparison
+        ref: A1_vs_A0
+        role: secondary
+        interpretation: >-
+          Conventional preprocessing against raw images. Descriptive: the intensity
+          treatment alone, not a registered hypothesis.
+      - kind: step21_row
+        ref: A0
+        role: secondary
+        interpretation: The no-preprocessing condition.
+      - kind: step21_row
+        ref: A1
+        role: secondary
+        interpretation: The conventional Step 5 pipeline.
+      - kind: step21_row
+        ref: A2
+        role: secondary
+        interpretation: The diffusion condition.
+      - kind: stage_summary
+        ref: step18_robustness
+        role: secondary
+        interpretation: Robustness under noise, which the specification names for this question.
+      - kind: step23_comparison
+        ref: A7_vs_P
+        role: secondary
+        interpretation: >-
+          End-to-end: the diffusion ladder's top row against the shipped model, which uses
+          the recipe Step 6 selected. Descriptive only - P is single-seed, so no seed-level
+          claim is supported.
+      - kind: stage_summary
+        ref: step06_preprocessing
+        role: secondary
+        interpretation: >-
+          The image-quality and edge-preservation ranking, which is the "image quality" half
+          of the specification's evidence column.
+
+  - id: RQ3
+    question: Boundary and texture preservation
+    spec_experiment: Assess explanations and performance on difficult cases; use masks if available.
+    spec_evidence: Grad-CAM localization, deletion/insertion tests.
+    evidence:
+      - kind: stage_summary
+        ref: step19_explainability
+        role: secondary
+        interpretation: >-
+          Grad-CAM panels with deletion and insertion sanity checks. These are the
+          specification's named evidence for this question.
+      - kind: step21_row
+        ref: A8
+        role: secondary
+        interpretation: >-
+          The explainability row. Its classification metrics are A7's by construction, so
+          its contribution here is qualitative rather than a performance delta.
+      - kind: absent
+        ref: segmentation_masks
+        role: secondary
+        interpretation: >-
+          The specification allows "use masks if available". The dataset ships no
+          segmentation masks, so localization cannot be scored against ground truth.
+    limitations:
+      - >-
+        No segmentation masks are available, so Grad-CAM localization is assessed by
+        deletion/insertion sanity checks rather than against annotated boundaries.
+
+  - id: RQ4
+    question: Adaptive kernels/circuits
+    spec_experiment: Compare fixed kernels/circuits with adaptive modules.
+    spec_evidence: Performance gain and learned scale/circuit weights.
+    evidence:
+      - kind: step23_comparison
+        ref: H2
+        role: primary
+        interpretation: >-
+          The adaptive quantum branch against the fixed QCNN - the circuits half of this
+          question, and a Holm-corrected primary hypothesis.
+      - kind: step21_row
+        ref: A3
+        role: secondary
+        interpretation: >-
+          The adaptive multiscale branch. Compared against A1 descriptively: the backbone
+          changes as well as the module, so the contrast is confounded and is not a
+          registered hypothesis.
+      - kind: step21_row
+        ref: A1
+        role: secondary
+        interpretation: The fixed-kernel CNN the adaptive multiscale branch is read against.
+      - kind: stage_summary
+        ref: step11_gate_morphology
+        role: secondary
+        interpretation: >-
+          The learned scale weights, which the specification names explicitly as evidence
+          for this question.
+    limitations:
+      - >-
+        A3 against A1 changes the backbone as well as the multiscale module, so it is
+        reported descriptively rather than as a test of adaptivity alone. Step 11's
+        eight-arm ablation is the controlled comparison for kernels.
+
+  - id: RQ5
+    question: Tumor variation handling
+    spec_experiment: Analyze performance by tumor size/appearance if metadata or masks are available.
+    spec_evidence: Class-wise metrics and subgroup performance.
+    evidence:
+      - kind: stage_summary
+        ref: step16_internal
+        key: per_class
+        role: secondary
+        interpretation: >-
+          Class-wise metrics for the shipped model, which is the half of this question the
+          available data can answer.
+      - kind: step21_row
+        ref: P
+        role: secondary
+        interpretation: Class-wise recall across the ablation, per row and per seed.
+      - kind: absent
+        ref: tumour_size_subgroups
+        role: secondary
+        interpretation: >-
+          The specification conditions this on metadata being available. The dataset ships
+          no tumour-size or appearance annotations, so subgroup performance cannot be
+          computed and is reported as absent rather than approximated.
+    limitations:
+      - >-
+        Metadata-limited. The dataset provides no tumour size or appearance annotations and
+        no segmentation masks, so the subgroup half of this question is not assessable. Only
+        class-wise metrics are reported; no proxy for tumour size has been substituted.
+
+  - id: RQ6
+    question: Imbalance strategy
+    spec_experiment: Compare class weights, focal loss, sampler, and augmentation.
+    spec_evidence: Minority-class recall, macro-F1, calibration.
+    evidence:
+      - kind: step23_comparison
+        ref: H3
+        role: primary
+        interpretation: >-
+          The imbalance-aware loss Step 14 selected against plain cross-entropy, on the
+          otherwise identical core model. A Holm-corrected primary hypothesis.
+      - kind: stage_summary
+        ref: step08_imbalance
+        role: secondary
+        interpretation: >-
+          The full strategy sweep - class weights, focal loss, sampler and augmentation -
+          which is the comparison the specification describes.
+      - kind: stage_summary
+        ref: step14_loss_selection
+        role: secondary
+        interpretation: The validation-only choice between the permitted losses.
+
+  - id: RQ7
+    question: External dataset performance
+    spec_experiment: Train on primary dataset and test on external dataset.
+    spec_evidence: Performance drop, cross-dataset macro-F1.
+    evidence:
+      - kind: stage_summary
+        ref: step17_external
+        role: secondary
+        interpretation: >-
+          Cross-dataset macro-F1 and the performance drop, reported both restricted to the
+          classes the external set contains and unrestricted.
+
+  - id: RQ8
+    question: Quantum benefit
+    spec_experiment: Remove or replace quantum branch and compare.
+    spec_evidence: Accuracy, macro-F1, parameter count, time.
+    evidence:
+      - kind: step23_comparison
+        ref: H4
+        role: primary
+        interpretation: >-
+          The full fused model against the multiscale branch alone - adding the quantum
+          branch and fusion. A Holm-corrected primary hypothesis.
+      - kind: stage_summary
+        ref: step20_quantum_advantage
+        role: secondary
+        interpretation: >-
+          The dedicated quantum-advantage analysis: a retrained no-quantum control, the
+          efficiency table with parameter count and time, and feature separability.
+      - kind: step21_row
+        ref: A4
+        role: secondary
+        interpretation: The fixed-circuit condition.
+      - kind: step21_row
+        ref: A5
+        role: secondary
+        interpretation: The adaptive-circuit condition.
+
+  - id: RQ9
+    question: Explainability
+    spec_experiment: Generate and evaluate class-specific explanations.
+    spec_evidence: Clinically relevant heatmaps and sanity checks.
+    evidence:
+      - kind: stage_summary
+        ref: step19_explainability
+        role: secondary
+        interpretation: >-
+          Class-specific Grad-CAM panels covering correct and incorrect cases, with
+          deletion/insertion sanity checks and MC-dropout uncertainty. Explainability is
+          assessed, not significance-tested.
+
+  - id: RQ10
+    question: Component contribution
+    spec_experiment: Full ablation study.
+    spec_evidence: Delta in metrics for each module.
+    evidence:
+      - kind: step21_ladder
+        role: secondary
+        interpretation: >-
+          The complete A0 to A8 ladder. A8's classification metrics are A7's by
+          construction, so it contributes no delta of its own.
+      - kind: step23_comparison
+        ref: H1
+        role: primary
+        interpretation: The preprocessing module's contribution.
+      - kind: step23_comparison
+        ref: H2
+        role: primary
+        interpretation: The adaptive circuit's contribution.
+      - kind: step23_comparison
+        ref: H3
+        role: primary
+        interpretation: The imbalance-aware loss's contribution.
+      - kind: step23_comparison
+        ref: H4
+        role: primary
+        interpretation: The quantum branch and fusion's contribution.
+    limitations:
+      - >-
+        A8 adds explainability and uncertainty, which change no weights, so its
+        classification metrics are identical to A7's by construction and it has no
+        performance delta to report.

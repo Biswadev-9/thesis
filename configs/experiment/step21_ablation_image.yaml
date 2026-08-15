@@ -1,0 +1,28 @@
+# @package _global_
+#
+# Step 21: base for the image-space ablation rows (A0-A5).
+#
+# Rows are not run by hand. src/analysis/ablation_rows.py defines the matrix and emits the
+# overrides, so that a test can assert A6 and A7 differ in the loss and in nothing else -
+# which nine separate config files could not promise:
+#
+#   python src/train.py experiment=step21_ablation_image model=branch_classical seed=42 \
+#       loss@model.criterion=plain_ce data.use_weighted_sampler=false \
+#       data.recipe=diffusion_i10_k15 data.normalize=imagenet data.augment=false
+#
+# This file deliberately declares NO recipe, normalization, augmentation, sampler or loss.
+# Every one of those is a row's own claim about what changed, and a default here would be
+# a value some row silently inherits. The row supplies all five; the protocol supplies
+# everything else.
+#
+# The protocol is Step 15's, unmodified, so a difference between two rows is architecture
+# or preprocessing rather than training schedule.
+
+defaults:
+  - override /data: bt_mri
+  - override /model: branch_classical
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step21", "ablation"]

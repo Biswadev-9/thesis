@@ -15,7 +15,7 @@ the minimum two-sided p-value for n=4 is 0.125. :func:`wilcoxon_paired` refuses 
 small to produce a meaningful result rather than reporting one.
 """
 
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, Mapping, Optional, Sequence
 
 import numpy as np
 from scipy import stats
@@ -223,6 +223,60 @@ def wilcoxon_paired(
         "p_value": float(p_value),
         "median_difference": float(np.median(first - second)),
     }
+
+
+def holm_bonferroni(
+    p_values: Mapping[str, Optional[float]], alpha: float = 0.05
+) -> Dict[str, Dict[str, object]]:
+    """Holm step-down correction over a family of hypotheses.
+
+    Four comparisons each judged at alpha=0.05 give roughly a one-in-five chance of at
+    least one false positive. Holm controls that family-wise rate while being uniformly
+    more powerful than Bonferroni: p-values are sorted ascending and the i-th is scaled by
+    the number of hypotheses still untested, ``(n - i)``, rather than by ``n`` throughout.
+
+    The adjusted values are made monotone non-decreasing, which is what makes the step-down
+    a valid procedure - without it a later hypothesis could be reported as more significant
+    than an earlier one it is conditioned on.
+
+    :param p_values: Comparison id to raw p-value. ``None`` marks a comparison that could
+        not be tested; it is reported as such and excluded from the family size rather than
+        counted as a hypothesis that happened not to reach significance.
+    :param alpha: Family-wise error rate.
+    :return: Per comparison: raw p, adjusted p, rank, and the corrected decision.
+    """
+    testable = {key: float(value) for key, value in p_values.items() if value is not None}
+    n = len(testable)
+
+    ordered = sorted(testable.items(), key=lambda item: item[1])
+    adjusted: Dict[str, float] = {}
+    running = 0.0
+    for index, (key, raw) in enumerate(ordered):
+        # Monotonicity: an adjusted p can never fall below the one before it.
+        running = max(running, min(1.0, (n - index) * raw))
+        adjusted[key] = running
+
+    results: Dict[str, Dict[str, object]] = {}
+    ranks = {key: index + 1 for index, (key, _) in enumerate(ordered)}
+
+    for key, raw in p_values.items():
+        if raw is None:
+            results[key] = {
+                "raw_p_value": None,
+                "adjusted_p_value": None,
+                "rank": None,
+                "significant": False,
+                "note": "No p-value was available; excluded from the correction family.",
+            }
+            continue
+        results[key] = {
+            "raw_p_value": float(raw),
+            "adjusted_p_value": float(adjusted[key]),
+            "rank": ranks[key],
+            "significant": bool(adjusted[key] <= alpha),
+        }
+
+    return results
 
 
 def summarise_across_seeds(values: Sequence[float]) -> Dict[str, float]:

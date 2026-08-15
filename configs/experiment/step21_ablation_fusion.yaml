@@ -1,0 +1,26 @@
+# @package _global_
+#
+# Step 21: base for the fusion ablation rows (A6, A7).
+#
+# Identical to Step 15's composition apart from the feature cache: same head, same
+# protocol, same optimizer. That is deliberate - A7 against row P must isolate
+# preprocessing, so nothing else may differ.
+#
+#   python src/train.py experiment=step21_ablation_fusion model=final_classifier seed=42 \
+#       loss@model.criterion=plain_ce data.use_weighted_sampler=false data.tag=a6_diffusion
+#
+# The tag is the whole point of the row and is never defaulted here. A6/A7 read features
+# extracted from DIFFUSION-trained branches (rows A2 and A5); the shipped model's cache is
+# built from CLAHE-trained ones. Sharing a tag would train a head labelled "diffusion" on
+# CLAHE features - a wrong number rather than an error, and invisible in the output. The
+# row supplies the tag and src/analysis/ablation_rows.py pins it to a name that cannot
+# collide with `default`.
+
+defaults:
+  - override /data: bt_mri_features
+  - override /model: final_classifier
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step21", "ablation", "fusion"]

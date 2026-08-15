@@ -116,6 +116,35 @@ IMBALANCE_OVERRIDES: Dict[str, Any] = {
 #: read this one file rather than carrying a name of their own.
 STEP14_SUMMARY = ("step14_loss_selection", "analyze", "step14_loss_selection_summary.json")
 
+#: Step 6's ranking, which decides which diffusion recipe the Step 21 ablation rows use.
+STEP06_SUMMARY = ("step06_preprocessing", "analyze", "step06_preprocessing_summary.json")
+
+#: Step 16's headline, which row P is reported from rather than re-evaluated.
+STEP16_SUMMARY = ("step16_internal", "analyze", "step16_internal_summary.json")
+
+#: Phase 8's output namespace. Training runs land under ``train/runs/<this>/<row>/seed_<n>``
+#: and the analyses under ``analyze/runs/<this>``. Distinct from every earlier stage, so a
+#: Phase 8 run cannot write over the study it is built from.
+ABLATION_NAMESPACE = "step21_ablation"
+
+# The Step 21 row manifest lives in src/, so the runner emits exactly the overrides the
+# analysis expects rather than a second copy that can drift. Safe to import at module
+# scope: ablation_rows depends only on dataclasses and typing, so `--list` still works
+# without a torch install.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.analysis.ablation_rows import ROWS as ABLATION_ROWS  # noqa: E402
+from src.analysis.ablation_rows import (  # noqa: E402  (needs ROOT on sys.path first)
+    AblationContext,
+    get_row,
+    row_overrides,
+)
+
+#: Rows whose forward pass runs a circuit on the CPU simulator. A4 is the fixed QCNN and A5
+#: the adaptive quantum branch; together they dominate Phase 8's wall clock.
+QUANTUM_ABLATION_ROWS = {"A4", "A5"}
+
 # ------------------------------------------------------------------------------------ #
 # Finding the dataset
 # ------------------------------------------------------------------------------------ #
@@ -624,7 +653,15 @@ class Pipeline:
 
         :return: The pinned Hydra run directory for the stage.
         """
-        return self.log_root / stage.entry / "runs" / stage.id
+        return self.out_dir_for(stage.entry, stage.id)
+
+    def out_dir_for(self, entry: str, stage_id: str) -> Path:
+        """:param entry: Entry point the stage runs under.
+
+        :param stage_id: Stage identifier.
+        :return: Its pinned Hydra run directory.
+        """
+        return self.log_root / entry / "runs" / stage_id
 
     def summary_path(self, stage_id: str, entry: str, filename: str) -> Path:
         """:param stage_id: Stage that produced it.
@@ -746,6 +783,45 @@ class Pipeline:
                 "unverified objective."
             )
         return [f"{prefix}loss_summary={path.as_posix()}"]
+
+    def ablation_context(self) -> AblationContext:
+        """The Step 6 and Step 14 answers the Step 21 rows depend on.
+
+        Rows A2-A6 are defined on diffusion preprocessing, which is an empirical choice
+        Step 6 already ranked, and row A7 on the loss Step 14 selected. Both are read from
+        their summaries rather than named here, so the ladder follows the study's own
+        decisions instead of a second copy of them.
+
+        :return: The resolved context.
+        :raises StageFailed: If either summary is missing.
+        """
+        step06 = self.read_summary(*STEP06_SUMMARY)
+        step14 = self.read_summary(*STEP14_SUMMARY)
+
+        missing = [
+            name
+            for name, payload in (("Step 6", step06), ("Step 14", step14))
+            if payload is None
+        ]
+        if missing:
+            raise StageFailed(
+                f"the Step 21 ablation needs {' and '.join(missing)} to have run: rows "
+                "A2-A6 train on the diffusion recipe Step 6 ranked, and row A7 on the loss "
+                "Step 14 selected. Run those stages first."
+            )
+
+        try:
+            return AblationContext.from_summaries(step06, step14)
+        except ValueError as error:
+            raise StageFailed(str(error)) from error
+
+    def ablation_ckpt(self, row_id: str, seed: int) -> Optional[str]:
+        """:param row_id: Ablation row.
+
+        :param seed: Protocol seed.
+        :return: That row's run directory, or ``None`` if it has not trained.
+        """
+        return self.branch_ckpt(f"{ABLATION_NAMESPACE}/{row_id}/seed_{seed}")
 
     def branch_ckpt(self, stage_id: str) -> Optional[str]:
         """:param stage_id: A training stage id.
@@ -1482,6 +1558,187 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
             _advantage,
             group="step20",
             note="retrained no-quantum control, efficiency table and separability",
+        )
+    )
+
+    # -- Step 21: the A0-A8 + P ablation ladder ---------------------------------------------
+    #
+    # Every row pins its own recipe, normalization, augmentation, sampler and loss through
+    # `row_overrides`, and NONE of them goes through `_train_builder`. That is the whole
+    # point: `_train_builder` applies recipe_override() and imbalance_overrides(), which
+    # inject Step 6's and Step 8's selections - so row A2 would be labelled "diffusion" and
+    # trained on whatever won Step 6, with nothing in the output to show it.
+    #
+    # A8 and P train nothing. A8's metrics are A7's by construction; P is the shipped model,
+    # already trained by Step 15 and evaluated once by Step 16.
+    def _materialise_diffusion(p: Pipeline) -> Optional[List[str]]:
+        return [f"recipe={p.ablation_context().diffusion_recipe}"]
+
+    add(
+        Stage(
+            "step21_materialise_diffusion",
+            "prepare_dataset",
+            _materialise_diffusion,
+            group="step21",
+            note="write the diffusion mirror rows A2-A5 read",
+        )
+    )
+
+    def _ablation_row(row_id: str, seed: int) -> Callable[[Pipeline], Optional[List[str]]]:
+        def build(p: Pipeline) -> Optional[List[str]]:
+            row = get_row(row_id)
+            return [
+                *row_overrides(row, seed=seed, context=p.ablation_context()),
+                *p.trainer_override(quantum=row_id in QUANTUM_ABLATION_ROWS),
+                *p.loader_overrides(),
+                *p.train_shape(),
+                "logger=csv",
+            ]
+
+        return build
+
+    image_rows = [r for r in ABLATION_ROWS if r.trains and r.feature_tag is None]
+    fusion_rows = [r for r in ABLATION_ROWS if r.trains and r.feature_tag is not None]
+
+    for row in image_rows:
+        for seed in seeds:
+            add(
+                Stage(
+                    f"{ABLATION_NAMESPACE}/{row.row_id}/seed_{seed}",
+                    "train",
+                    _ablation_row(row.row_id, seed),
+                    group="step21",
+                    is_train=True,
+                    note=f"{row.row_id}: {row.label} (seed {seed})",
+                )
+            )
+
+    # A6 and A7 read features extracted from the DIFFUSION-trained branches - rows A2 and A5,
+    # which are the same networks the shipped model uses, at the same protocol and seed. The
+    # cache tag is the row's own, so it cannot collide with the shipped model's.
+    def _ablation_features(p: Pipeline) -> Optional[List[str]]:
+        seed = p.seeds[0]
+        classical = p.ablation_ckpt("A2", seed)
+        quantum = p.ablation_ckpt("A5", seed)
+        if not (classical and quantum):
+            missing = [n for n, v in (("A2", classical), ("A5", quantum)) if not v]
+            raise StageFailed(
+                f"the A6/A7 feature cache is extracted from rows {', '.join(missing)}; "
+                "train those first"
+            )
+        return [
+            f"classical_ckpt={classical}",
+            f"quantum_ckpt={quantum}",
+            f"tag={get_row('A6').feature_tag}",
+            f"data.recipe={p.ablation_context().diffusion_recipe}",
+            *p.loader_overrides(),
+        ]
+
+    add(
+        Stage(
+            f"{ABLATION_NAMESPACE}/features",
+            "extract_features",
+            _ablation_features,
+            group="step21",
+            note="cache the diffusion tri-branch features A6 and A7 train on",
+        )
+    )
+
+    for row in fusion_rows:
+        for seed in seeds:
+            add(
+                Stage(
+                    f"{ABLATION_NAMESPACE}/{row.row_id}/seed_{seed}",
+                    "train",
+                    _ablation_row(row.row_id, seed),
+                    group="step21",
+                    is_train=True,
+                    note=f"{row.row_id}: {row.label} (seed {seed})",
+                )
+            )
+
+    def _ablation_eval(p: Pipeline) -> Optional[List[str]]:
+        missing = [
+            f"{row.row_id}/seed_{seed}"
+            for row in ABLATION_ROWS
+            if row.trains
+            for seed in p.seeds
+            if not p.ablation_ckpt(row.row_id, seed)
+        ]
+        if missing:
+            raise StageFailed(
+                f"Step 21 evaluates checkpoints the ablation rows produce; missing: "
+                f"{', '.join(missing)}"
+            )
+        return [
+            f"analysis={ABLATION_NAMESPACE}",
+            f"analysis.run_root={(p.log_root / 'train' / 'runs' / ABLATION_NAMESPACE).as_posix()}",
+            f"analysis.step06_summary={p.summary_path(*STEP06_SUMMARY).as_posix()}",
+            f"analysis.step14_summary={p.summary_path(*STEP14_SUMMARY).as_posix()}",
+            # Row P is READ from here, not re-evaluated: the shipped model has already spent
+            # the once-only test budget Step 16's lock protects.
+            f"analysis.step16_summary={p.summary_path(*STEP16_SUMMARY).as_posix()}",
+            f"analysis.seeds=[{','.join(str(s) for s in p.seeds)}]",
+            *p.loader_overrides(),
+        ]
+
+    add(
+        Stage(
+            ABLATION_NAMESPACE,
+            "analyze",
+            _ablation_eval,
+            group="step21",
+            note="evaluate every ablation row on the internal test set",
+        )
+    )
+
+    # -- Step 23: statistical reporting -----------------------------------------------------
+    # Consumes Step 21's saved predictions. The four-hypothesis family, the Holm correction
+    # and the descriptive/formal split all live in the analysis; the runner only points at it.
+    def _statistics(p: Pipeline) -> Optional[List[str]]:
+        ablation = p.out_dir_for("analyze", ABLATION_NAMESPACE)
+        if not (ablation / f"{ABLATION_NAMESPACE}_summary.json").is_file():
+            raise StageFailed(
+                f"Step 23 reads Step 21's artefacts; {ablation} has no summary. Run "
+                f"analysis={ABLATION_NAMESPACE} first."
+            )
+        return [
+            "analysis=step23_statistics",
+            f"analysis.ablation_dir={ablation.as_posix()}",
+        ]
+
+    add(
+        Stage(
+            "step23_statistics",
+            "analyze",
+            _statistics,
+            group="step23",
+            note="Holm-corrected primary family, plus descriptive comparisons",
+        )
+    )
+
+    # -- Step 22: research question mapping -------------------------------------------------
+    # Runs last: it maps what every earlier stage produced, so it can only be built once
+    # they have.
+    def _rq_mapping(p: Pipeline) -> Optional[List[str]]:
+        statistics = p.out_dir_for("analyze", "step23_statistics")
+        if not (statistics / "step23_statistics_summary.json").is_file():
+            raise StageFailed(
+                f"Step 22 maps Step 23's findings; {statistics} has no summary. Run "
+                "analysis=step23_statistics first."
+            )
+        return [
+            "analysis=step22_rq_mapping",
+            f"analysis.analyze_root={(p.log_root / 'analyze' / 'runs').as_posix()}",
+        ]
+
+    add(
+        Stage(
+            "step22_rq_mapping",
+            "analyze",
+            _rq_mapping,
+            group="step22",
+            note="RQ1-RQ10 evidence table, assembled from the artefacts on disk",
         )
     )
 
