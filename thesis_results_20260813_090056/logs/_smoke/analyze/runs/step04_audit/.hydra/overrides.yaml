@@ -1,3 +1,0 @@
-- analysis=step04_audit
-- data.num_workers=2
-- data.pin_memory=true
