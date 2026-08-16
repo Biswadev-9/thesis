@@ -1013,6 +1013,344 @@ to emit overrides from it.
 
 ---
 
+## Step 24 — receptive-field strategy ablation
+
+### D46 — Why Step 24 exists · `done` (not yet run)
+
+Step 11 built an eight-arm ablation of the multiscale module, and Phase 8 carries the
+proposed branch as row A3. Neither answers the question the thesis actually needs answered.
+
+Phase 8's only comparison involving the branch is **H4 (A6 vs A3)**, which changes three
+things at once - backbone, quantum branch and fusion head - so nothing in it is
+attributable to the receptive-field mechanism. And **every Phase 8 row from A3 upward uses
+`spatial_gate`**: the gate is never varied or removed, so no row can measure its
+contribution. The evidence for RQ4 therefore rests entirely on Step 11's arm sweep, which
+Phase 8 references but does not re-run under Phase 8's controlled settings.
+
+Step 24 asks one question directly: *does spatially adaptive selection among multiple
+receptive fields improve classification over conventional fixed-receptive-field convolution
+and over ungated multi-scale fusion?*
+
+**No results are claimed. Step 24 has not been trained.**
+
+### D47 — All five conditions reuse existing Step 11 arms · `done`
+
+The ladder needed no new architecture. Every condition is an arm
+`src/models/components/multiscale.py` already implements:
+
+| Condition | Arm | Receptive field | Fusion |
+|---|---|---|---|
+| `FIXED_3X3` | `arm1_fixed_3x3` | single 3x3 | n/a |
+| `FIXED_5X5` | `arm2_fixed_5x5` | single 5x5 | n/a |
+| `FIXED_DILATED_3X3` | `arm3_fixed_dilated` | 3x3 dilation 3 (7x7 effective) | n/a |
+| `MULTISCALE_NO_GATE` | `arm4_concat_nogate` | 3x3 + 5x5 + dilated | concat + learned 1x1 projection |
+| `ADAPTIVE_MULTISCALE` | `arm6_spatial_gate` | 3x3 + 5x5 + dilated | per-pixel softmax gate |
+
+Two naming corrections the implementation forces:
+
+- **`FIXED_DILATED_3X3` is not a literal 7x7 convolution.** It is a dilated 3x3 reaching a
+  7x7 field at 3x3 parameter cost. Substituting a real 7x7 would change the condition's
+  capacity and stop it matching the same path inside the two multi-scale conditions.
+- **`MULTISCALE_NO_GATE` is not equal-weight fusion.** It concatenates the three paths and
+  learns a 1x1 projection back to the shared width. The mixer is *learned* but
+  input-independent once trained. Describing it as equal-weight averaging would misstate
+  what the control is. A true equal-weight arm does not exist in the repository.
+
+Terminology throughout: the convolutions are fixed in every condition. What adapts is the
+per-pixel weighting over their outputs. "Spatially adaptive multi-scale receptive-field
+selection" is accurate; "dynamic kernels" and "attention" are not - there is no query-key
+computation anywhere in the module.
+
+### D48 — One formal hypothesis, in its own family · `done`
+
+**H24: `ADAPTIVE_MULTISCALE` vs `MULTISCALE_NO_GATE`.** Both carry the identical three
+receptive fields, so the gate is the only difference - which makes it the one causal
+comparison in the ladder.
+
+The three fixed-kernel comparisons (`S24a/b/c`) change the receptive field *and* the
+parameter budget together, so they cannot isolate gating and are **descriptive**: effect
+size and 95% interval, no p-value, `significant: null` rather than `false`.
+
+**This family is separate from Phase 8's H1-H4 and does not touch it.** Appending would
+turn four Holm-corrected tests into five and weaken every one; `StatisticalReport`'s
+`_check_family` refuses exactly that, and a test asserts Step 24's identifiers do not
+intersect Phase 8's. Holm over a family of one is the identity - applied and reported
+anyway, with a note, because an adjusted p-value that silently equals the raw one is worse
+than one that explains why.
+
+### D49 — The conditions are not parameter-matched, and the output says so · `done`
+
+Counts measured by building the arms (`channels=32`, `num_classes=4`):
+
+| Condition | Parameters | vs adaptive |
+|---|---|---|
+| `FIXED_3X3` | 19,716 | −36,643 (−65.0%) |
+| `FIXED_DILATED_3X3` | 19,716 | −36,643 (−65.0%) |
+| `FIXED_5X5` | 36,100 | −20,259 (−35.9%) |
+| `ADAPTIVE_MULTISCALE` | 56,359 | — |
+| `MULTISCALE_NO_GATE` | **57,828** | **+1,469 (+2.6%)** |
+
+The fixed conditions are smaller because a single path is smaller - which is precisely why
+their comparisons are descriptive rather than formal.
+
+**For H24 the relationship runs the other way: the control is the larger model.** The
+ungated arm carries 2.6% more parameters than the adaptive one, so a win for adaptivity
+cannot be explained by extra capacity. The adaptive gate head itself is 1,635 parameters,
+2.9% of the model - most of what separates the adaptive condition from a fixed one is
+*having three paths at all*, not gating. Counts are computed at run time, never tabulated
+in code, and a test asserts they match the real modules.
+
+### D50 — Nothing is inherited, and the ladder shares one recipe · `done`
+
+`configs/experiment/step11_arm_ablation.yaml` declares `augment: true` and
+`use_weighted_sampler: true`, and the pipeline then overrides both with Step 8's selection.
+Fine for an arm sweep; fatal for a controlled comparison, because two conditions run under
+different selections are not comparable for a reason unrelated to receptive fields.
+
+Step 24's conditions therefore pin recipe, normalization, augmentation, sampler and loss
+explicitly (`plain_ce`, `augment=false`, `use_weighted_sampler=false`,
+`normalize=imagenet`), bypass `_train_builder` entirely, and share one recipe resolved from
+Step 6's ranking - the same diffusion recipe the Phase 8 rows use. That makes
+`ADAPTIVE_MULTISCALE` configuration-identical to Phase 8's row A3, so the two experiments
+are mutually checkable.
+
+`configs/experiment/step24_receptive_field.yaml` deliberately declares no data defaults at
+all, for the same reason.
+
+### D51 — Step 24 is appended, not merged into Phase 8 · `done`
+
+It runs after Step 22 in its own namespace (`step24_receptive_field`), reads none of
+Steps 21-23's outputs and is read by none of them. The Phase 8 dependency graph is
+unchanged and nothing in Step 24 can retrain it. Fifteen training runs (5 conditions x 3
+seeds), all classical - unlike Phase 8, no condition here runs a quantum simulator.
+
+### D52 — Step 24 uses the recipe Step 6 *confirms*, and blocks until it exists · `done`
+
+**Superseded the original D52**, which framed this as "diffusion (the specification) versus
+CLAHE (what the study ships)". That framing rested on a false premise: **the study ships
+nothing yet.** Auditing the artefacts showed there is no finalized preprocessing selection
+at all.
+
+Four Step 6 summaries exist and they disagree - `conventional`, `conventional`, `clahe`,
+`clahe` - and *all four are reduced-scale proxy runs*. The one most often quoted came from
+the smoke profile, at 0.2570 against 0.2469 on four balanced classes, where chance is 0.25;
+both numbers are noise, and that run's own report is stamped "Not reportable". The
+strongest run (13 candidates, 5 epochs, 200 images/class) does favour CLAHE at 0.647
+against 0.5598 for the best diffusion variant - but it is still a `SmallCNN` at 128px, and
+every Step 6 summary ends with the same caveat:
+
+> *"Confirm the top candidates with the real backbone on the full validation split before
+> committing."*
+
+**`step06_confirm` has never been run.** No such run directory exists anywhere.
+
+**And it could not have settled anything if it had.** `configs/experiment/step06_confirm.yaml`
+is a *training experiment*, not an analysis: a Hydra multirun that produces one run
+directory per candidate and no summary, no winner, no `selected_recipe`. It is not wired
+into the pipeline, and grepping `src/`, `configs/` and `tests/` finds no consumer - its only
+mention anywhere is its own docstring. Meanwhile `Pipeline.selected_recipe()` reads only the
+*proxy* summary, so even after a confirmation ran, every downstream stage would still have
+resolved the proxy's answer. The confirmation was advisory, and the study had no artefact
+recording what it advised.
+
+**Now** `src/analysis/preprocessing_confirmation.py` reads the completed confirmation runs,
+compares them on validation macro-F1 and writes `step06_confirm_summary.json` with an
+explicit `selected_recipe` and its provenance. Step 24 consumes that artefact and **nothing
+else**:
+
+- no fallback to the proxy ranking - the resolver cannot even reach it, asserted by a test
+  that walks the AST of both Step 24 modules;
+- with no confirmation and no explicit override, Step 24 **refuses to build**, so fifteen
+  training runs cannot start on an unconfirmed preprocessing;
+- `--recipe` still wins, because an explicit operator decision is not an implicit fallback;
+- all five conditions receive one recipe from one context object - there is no per-condition
+  recipe field that could diverge.
+
+No winner is assumed anywhere. The analysis invents nothing: an empty sweep fails, a
+single-recipe sweep is refused as not being a comparison, and runs from another experiment
+are ignored (the Step 9 sweep also varies by recipe and would otherwise answer a different
+question with equal confidence). Tests parametrise over several unrelated recipes precisely
+so no test encodes a preprocessing decision, and the winner reverses when the scores do.
+
+Selection is validation-only. Every run's `metrics.csv` also carries `test/*` columns -
+`test: True` in `configs/train.yaml` is never overridden - and reading those would let the
+internal test set decide a question that precedes Step 16. The metric is validated to start
+with `val/` and anything else is rejected.
+
+**Phase 8 is untouched.** Its A2-A6 rows still resolve the diffusion recipe from Step 6's
+ranking, per the specification's Step 21 table. Whether they should also follow the
+confirmation is a separate decision, still open.
+
+Related, and inherited from Step 11: **no test proved the gate is input-dependent across
+images** before Step 24. Step 11's suite checks the weight map varies across space *within*
+one input; nothing checked that two different images produce different maps, which is the
+property the word "adaptive" claims. Step 24 adds that test.
+
+---
+
+## Step 25 — quantum circuit adaptivity ablation
+
+### D53 — Why Step 25 exists · `done` (not yet run)
+
+Step 12 runs **five** quantum circuits on every image and combines their outputs with a
+learned per-image softmax. Nothing in the study tested whether that beats committing to one
+circuit.
+
+Phase 8's H2 (A5 vs A4) looks like that test and is not: A4 is `baseline_fixed_qcnn`, a
+2-conv CNN stem with 5,248 parameters, against A5's 72,408-parameter Step 12 branch. They
+differ in backbone, feature dimension (4 vs 36), fusion and classifier. H2 measures
+*architectures*, not circuit adaptivity.
+
+Step 25 asks directly, with the confound removed.
+
+**No results are claimed. Step 25 has not been trained.**
+
+### D54 — All four conditions are the existing Step 12 class · `done`
+
+No new architecture. `AdaptiveQuantumClassifier` already accepts `circuit_names`, and
+setting it to a single circuit makes the mixture **mathematically inert** - a softmax over
+one element is identically 1.0. The same class therefore expresses both the treatment and
+its controls, and they cannot drift apart.
+
+| Condition | `circuit_names` | Circuit | q-params | Total |
+|---|---|---|---|---|
+| `FIXED_BASIC` | `['fixed']` | 2× BasicEntangler | 8 | 72,052 |
+| `FIXED_DEEP` | `['deep']` | 4× BasicEntangler | 16 | 72,060 |
+| `FIXED_STRONG` | `['strong']` | 2× StronglyEntangling | 24 | 72,068 |
+| `ADAPTIVE_QUANTUM` | `null` | all five, softmax-mixed | 104 | 72,408 |
+
+Spatial branch (56,227), projection (132), fusion (concat→36) and classifier (13,508) are
+**identical across all four**, verified by measurement rather than assertion.
+
+### D55 — Terminology: a soft mixture, not dynamic selection · `done`
+
+All five circuits execute on every forward pass. Nothing is skipped, no circuit is chosen
+at run time, and there is no conditional execution - a test hooks every expert's `forward`
+and asserts all five are called. The correct description is an **adaptive soft mixture of
+quantum circuits**. "Dynamic circuit selection" and "conditional quantum execution" would
+both misstate the mechanism *and* its cost, which is five simulator evaluations per image
+against one.
+
+### D56 — What the experiment does and does not license · `done`
+
+The Step 11 spatial gate is hard-coded inside `AdaptiveQuantumBranch` and is **77.65% of
+the parameters**; the quantum experts are **0.14%**. The gate is identical across all four
+conditions, so the comparison is valid - but the claim it supports is about
+*circuit-mixture adaptivity only*.
+
+It must not be reported as showing the model as a whole is more powerful because of
+adaptivity. Given the parameter share, a null result is unsurprising and remains a valid,
+reportable outcome.
+
+### D57 — Three primary comparisons, Holm-corrected · `done`
+
+**H25a/b/c: `ADAPTIVE_QUANTUM` against each fixed circuit.** One family of three, so unlike
+Step 24's family of one the correction genuinely bites: three tests at alpha=0.05 give
+roughly a one-in-seven chance of a spurious positive uncorrected.
+
+The three fixed-versus-fixed comparisons are **descriptive**. Whether depth or entanglement
+alone explains a difference is a different question, and promoting them would double the
+family from three to six. Separate from Phase 8's H1-H4 and Step 24's H24; a test asserts
+the identifier sets do not intersect.
+
+### D58 — Validation only; the test set stays sealed · `done`
+
+Step 25 selects among architectures, like Steps 6, 8, 13 and 14, so it is decided on the
+**validation** split and the internal test set remains Step 16's to spend once. `split` is
+asserted to be `val` and anything else is refused. Every training run's `metrics.csv` also
+carries `test/*`; none is read.
+
+### D59 — Capacity is not matched, and the gap favours the treatment · `done`
+
+The adaptive condition is the larger model by at most 356 parameters (0.49%), because it
+carries five circuits' weights. Small, but in the treatment's favour - the opposite of
+Step 24, where the control is larger. Counts are measured by building the models, and a
+positive H25 result must be read with the gap in view.
+
+### D60 — Adaptivity is analysed, not assumed · `done`
+
+The claimed contribution is the per-image weighting, so the mixture weights are summarised
+directly: per-circuit mean/std/min/max, normalised entropy, the dominant circuit, and
+whether the weights vary between images at all.
+
+Two failure modes matter and neither shows up in accuracy: a selector **collapsed** onto one
+circuit is a fixed circuit with extra parameters, and one that stayed **uniform** is an
+unweighted average. Both are detected, and tests drive each case explicitly.
+
+Weights that vary are **not** evidence the mixture helps - only the paired comparison
+answers that, and the output says so in the note a reader will quote.
+
+### D61 — Step 25 follows Step 6's confirmed preprocessing · `done`
+
+Step 25 does not select a recipe of its own; it uses the same authoritative confirmation
+Step 24 does, with no fallback to the proxy ranking, and refuses to run without one. The
+explicit `analysis.recipe` / `--recipe` development override is preserved and recorded in
+the output as the recipe's source, so a development run can never be mistaken for the final
+study. All four conditions receive the same recipe, structurally: one context object
+supplies it and no condition carries a recipe field.
+
+### D62 — Step 6 confirmation is wired into the graph, and gates Steps 24 and 25 · `done`
+
+Before this, `step06_confirm` existed as an experiment config and an analysis, and was in
+**no** pipeline stage. Run All would have gone proxy -> materialise -> ... -> Step 24 and
+stopped there with `StageFailed`. Safe, but not a dependency - the graph did not know one
+existed.
+
+The chain is now explicit:
+
+```
+step06_preprocessing  (proxy ranking)
+        |
+step06_confirm_materialise/<candidate>       one per non-identity candidate
+        |
+step06_confirm/<candidate>/seed_<n>          real backbone, fixed protocol
+        |
+step06_confirm  ->  step06_confirm_summary.json     AUTHORITATIVE
+        |
+        +---------------> step24_receptive_field/*      (5 conditions x 3 seeds)
+        +---------------> step25_quantum_circuit_ablation/*  (4 conditions x 3 seeds)
+```
+
+Enforced two ways, not one. **Ordering**: the confirmation stages sit in `step06`, long
+before either consumer, and its summary stage follows its own training runs. **Refusal**:
+every Step 24 and Step 25 *training* stage resolves the recipe through
+`confirmed_recipe_context()` and raises `StageFailed` if the artefact is absent - so Run All
+stops at the first consumer rather than proceeding on the proxy's ranking. Tests assert
+both, and moving the confirmation stage to the end of the graph fails the suite.
+
+**Resumable, not repeated.** The confirmation stages carry `.pipeline_done.json` like every
+other stage, so a completed confirmation is skipped on the next invocation. No new caching
+mechanism was introduced.
+
+**The candidate set is data-driven and overridable.** `confirm_candidates()` takes the top
+`--confirm-top-k` (default 3) of the proxy's own ranking and always appends the conventional
+reference - a confirmation that cannot say "no preprocessing was as good" has confirmed
+nothing. `--confirm-recipes` states the set explicitly instead.
+
+**`selected_recipe` is NOT YET ESTABLISHED.** No confirmation has been run. No module,
+config or test in the Step 24 / Step 25 / confirmation chain names a preprocessing recipe;
+an AST test enforces it, and the propagation tests are parametrised across several
+unrelated recipes precisely so none of them encodes a guess.
+
+### D63 — Open: the confirmation's candidate set and seed count · `open`
+
+Two parameters of the confirmation are scientific choices with defaults rather than
+decisions:
+
+- **How many candidates** (`--confirm-top-k`, default 3, plus the conventional reference).
+  Three real-backbone runs is affordable; more is better evidence.
+- **How many seeds** (`--confirm-seeds`). **Settled: the full protocol set.** A single run
+  ranks the candidates with no error bar, and this repository's own proxy runs produced
+  three different winners across configurations - so a small gap must be distinguishable
+  from a seed effect. The default follows `--seeds`, so a shortened profile confirms at
+  that profile's seeds.
+
+The candidate count remains a default rather than a signed-off decision. Both are exposed
+on the command line and recorded in the summary's provenance.
+
+
+---
+
 ## Environment and template repairs
 
 These are not methodological, but they changed files and are recorded for traceability.

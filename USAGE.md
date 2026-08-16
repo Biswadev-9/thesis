@@ -2,9 +2,10 @@
 
 How to run the thesis study from this repository.
 
-**Status: Phases 1–8 implemented — specification Steps 1, 3–23.**
-Phase 8 (Steps 21–23) is wired and tested but **has not been run**: no ablation row has been
-trained. See §3's Phase 8 section for what that costs before you start.
+**Status: Phases 1–8 implemented — specification Steps 1, 3–23, plus Steps 24 and 25.**
+Phase 8 (Steps 21–23), Step 24 and Step 25 are wired and tested but **have not been run**: no
+ablation row, receptive-field condition or circuit condition has been trained. See §3 for what each costs
+before you start.
 
 > This file is updated at the end of every phase. If a command appears here, it has been
 > run and works. If a step is not listed, it is not implemented yet.
@@ -153,15 +154,29 @@ prints the exact command to materialise it.
 >     'analysis.diffusion_iterations=[10,15]' 'analysis.diffusion_kappas=[15.0]'
 > ```
 
-Then **confirm the winner with the real backbone** — the proxy ranks, it does not decide:
+Then **confirm the winner with the real backbone** — the proxy ranks, it does not decide.
+Run All now does this for you (`step06_confirm_materialise/*` → `step06_confirm/*` →
+`step06_confirm`), or by hand:
 
 ```bash
-python src/prepare_dataset.py -m recipe=diffusion_i10_k15,diffusion_i15_k15
-python src/train.py -m experiment=step06_confirm \
-    data.recipe=null,diffusion_i10_k15,diffusion_i15_k15 trainer=gpu
+python src/prepare_dataset.py -m recipe=<candidates>
+python src/train.py -m experiment=step06_confirm data.recipe=null,<candidates> trainer=gpu
+python src/analyze.py analysis=step06_confirm \
+    analysis.run_root=logs/train/runs/step06_confirm
 ```
 
 Compare on **validation** macro-F1 only. The test set stays untouched until Step 16.
+
+This writes `step06_confirm_summary.json` — the study's **authoritative** preprocessing
+decision. **Steps 24 and 25 consume it and refuse to run without it**; neither ever reads
+the proxy ranking. Candidates default to the top three of the proxy's ranking plus the
+conventional reference (`--confirm-top-k`), or state them with `--confirm-recipes`; seeds
+default to the full protocol set (`--confirm-seeds`), because this decision governs every
+downstream stage.
+
+> **Until this runs, `selected_recipe` is NOT YET ESTABLISHED.** Nothing in the code
+> assumes a winner, and an AST test enforces that no recipe name appears in Step 24,
+> Step 25 or the confirmation modules.
 
 > Materialising is what makes diffusion usable at all: applied on the fly it would
 > dominate every epoch, which is why the notebook selected it and then never used it.
@@ -620,6 +635,156 @@ Phase 8 writes under `logs/train/runs/step21_ablation/<row>/seed_<n>` and
 evidence and are never written to or deleted — a test asserts no Phase 8 stage resolves a
 path inside them.
 
+### Step 24 — Receptive-field strategy ablation
+
+> **⚠ Not yet run, and it will refuse to start.** Step 24 requires Step 6's *confirmed*
+> preprocessing recipe, which has not been produced yet — see the box below. Once it has:
+> fifteen training runs (5 conditions × 3 seeds), all classical, so far cheaper than A4/A5.
+
+> **Step 6 confirmation is a prerequisite.** Step 24 uses the preprocessing recipe
+> **confirmed by Step 6** on the real backbone. **No preprocessing winner is assumed before
+> that confirmation**, and Step 24 does *not* fall back to the Step 6 proxy ranking — it
+> stops with `Step 6 confirmation has not produced an authoritative selected_recipe`.
+> That is deliberate: fifteen runs on an unconfirmed preprocessing would answer the
+> question for a configuration the study does not ship.
+>
+> ```bash
+> # 1. materialise the candidates you intend to confirm, then sweep them (GPU)
+> python src/prepare_dataset.py -m recipe=<non-identity candidates>
+> python src/train.py -m experiment=step06_confirm >     data.recipe=null,<candidates> trainer=gpu
+>
+> # 2. turn those runs into the authoritative decision
+> python src/analyze.py analysis=step06_confirm >     analysis.run_root=logs/train/multiruns/<timestamp>
+> ```
+>
+> Step 2 writes `logs/analyze/runs/step06_confirm/step06_confirm_summary.json` carrying
+> `selected_recipe`, the per-recipe validation scores, the seeds used and the source runs.
+> Selection is on **validation macro-F1 only** — the analysis refuses any `test/` metric,
+> because preprocessing is decided long before Step 16. It refuses an empty sweep, refuses a
+> single candidate as not being a comparison, and ignores runs from another experiment.
+>
+> The candidate set is yours to choose at sweep time; the analysis reads whatever ran rather
+> than prescribing a list, so it cannot silently widen or narrow the comparison.
+>
+> `--recipe <name>` still overrides everything, for deliberate use.
+
+**Why it exists.** Phase 8's only comparison involving the multiscale branch is H4
+(A6 vs A3), which changes backbone, quantum branch and fusion head together — so nothing in
+it is attributable to the receptive-field mechanism. And every Phase 8 row from A3 upward
+uses the spatial gate; it is never varied or removed. Step 24 tests the mechanism directly.
+
+**The question.** Does *spatially adaptive selection among* multiple receptive fields
+improve classification over conventional fixed-receptive-field convolution, and over
+ungated multi-scale fusion of the same three fields?
+
+| Condition | Receptive-field strategy | Fusion | Adaptive? | Params |
+|---|---|---|---|---|
+| `FIXED_3X3` | single 3×3 | — | No | 19,716 |
+| `FIXED_5X5` | single 5×5 | — | No | 36,100 |
+| `FIXED_DILATED_3X3` | 3×3 dilation 3 (7×7 effective) | — | No | 19,716 |
+| `MULTISCALE_NO_GATE` | 3×3 + 5×5 + dilated | concat + learned 1×1 projection | No | **57,828** |
+| `ADAPTIVE_MULTISCALE` | 3×3 + 5×5 + dilated | per-pixel softmax gate | **Yes** | 56,359 |
+
+All five are **existing Step 11 arms** — Step 24 introduces no new architecture. Every
+condition shares one recipe (Step 6's confirmed one), `plain_ce`, `augment=false`,
+`use_weighted_sampler=false`,
+seeds `[42, 123, 7]`, `configs/protocol/fixed.yaml`, a 32-d feature width and an identical
+`Linear(32, 4)` head. Nothing is inherited from Step 6's or Step 8's selections.
+
+**One formal hypothesis, in its own family:**
+
+> **H24 — `ADAPTIVE_MULTISCALE` vs `MULTISCALE_NO_GATE`.** Both carry the identical three
+> receptive fields, so the gate is the only difference. Holm over a family of one is the
+> identity, reported explicitly. **This family is separate from Phase 8's H1–H4 and does
+> not touch it.**
+
+The three fixed-kernel comparisons (`S24a/b/c`) are **descriptive** — effect size and 95%
+interval, no p-value — because each changes receptive field *and* parameter budget at once.
+
+> **The conditions are not parameter-matched, and that is reported rather than hidden.**
+> The fixed conditions are smaller because a single path is smaller. For H24 the
+> relationship runs the *other* way: the ungated control carries **2.6% more** parameters
+> than the adaptive model, so a win for adaptivity cannot be explained by capacity. The
+> gate head itself is 1,635 parameters — 2.9% of the model.
+
+**Terminology.** The convolutions are fixed in every condition. What adapts is the
+per-pixel weighting over their outputs, computed from the input on every forward pass. Call
+it *spatially adaptive multi-scale receptive-field selection* — not "dynamic kernels", and
+not "attention" (there is no query–key computation anywhere in the module).
+
+```bash
+# Composition only — builds every Step 24 stage and prints it, running nothing:
+python scripts/kaggle_pipeline.py --list --only step24
+
+# The real thing:
+python scripts/kaggle_pipeline.py --profile full --only step24
+
+# Or the analysis alone, once the fifteen runs exist:
+python src/analyze.py analysis=step24_receptive_field \
+    analysis.run_root=logs/train/runs/step24_receptive_field \
+    analysis.recipe=diffusion_i10_k15
+```
+
+Step 24 runs after Step 22, reads none of Steps 21–23's outputs and is read by none of
+them, and writes only under `logs/{train,analyze}/runs/step24_receptive_field`. It cannot
+retrain Phase 8 or alter its dependency graph.
+
+### Step 25 — Quantum circuit adaptivity ablation
+
+> **⚠ Not yet run.** Twelve training runs (4 conditions x 3 seeds). The adaptive condition
+> evaluates **five** circuits per image on the CPU simulator, so budget it like Step 12.
+
+**Why it exists.** Step 12 mixes five quantum circuits with a learned per-image softmax,
+and nothing tested whether that beats one fixed circuit. Phase 8's H2 looks like that test
+but is not: it compares against `baseline_fixed_qcnn`, a different architecture with a
+fourteenth of the parameters.
+
+| Condition | `circuit_names` | Circuit | q-params | Total | Adaptive? |
+|---|---|---|---|---|---|
+| `FIXED_BASIC` | `[fixed]` | 2x BasicEntangler | 8 | 72,052 | No |
+| `FIXED_DEEP` | `[deep]` | 4x BasicEntangler | 16 | 72,060 | No |
+| `FIXED_STRONG` | `[strong]` | 2x StronglyEntangling | 24 | 72,068 | No |
+| `ADAPTIVE_QUANTUM` | `null` | all five, softmax-mixed | 104 | 72,408 | **Yes** |
+
+All four are the **existing Step 12 class** - with one circuit the softmax is identically
+1.0, so the mixture is inert and no new architecture is needed. Spatial branch, projection,
+fusion and classifier are byte-identical; the only override that differs is
+`model.net.circuit_names`.
+
+**Three primary comparisons, one Holm-corrected family:** the mixture against each fixed
+circuit. The three fixed-versus-fixed comparisons are **descriptive** - whether depth or
+entanglement alone explains a difference is a separate question.
+
+> **Validation only.** This is an architecture question, like Steps 6, 8, 13 and 14, so the
+> internal test set stays sealed for Step 16.
+
+> **Scope.** The Step 11 spatial gate lives inside the branch and is 77.65% of the
+> parameters; the quantum experts are 0.14%. It is identical across all four conditions, so
+> the comparison is valid - but it licenses a claim about **circuit-mixture adaptivity
+> only**, never about the model as a whole. A null result is unsurprising and reportable.
+
+> **Capacity is not matched**, and the gap favours the treatment: the adaptive condition is
+> larger by at most 356 parameters (0.49%).
+
+**Terminology.** All five circuits execute on every image; none is skipped. Call it an
+*adaptive soft mixture of quantum circuits* - not dynamic circuit selection, and not
+conditional quantum execution.
+
+Beyond accuracy, the analysis summarises the mixture weights themselves: per-circuit
+statistics, normalised entropy, and whether the selector **collapsed** onto one circuit (a
+fixed circuit with extra parameters) or stayed **uniform** (an unweighted average). Weights
+that vary are not evidence the mixture helps - only the paired comparison answers that.
+
+```bash
+# Composition only - builds every Step 25 stage, running nothing:
+python scripts/kaggle_pipeline.py --list --only step25
+
+# The analysis, once the twelve runs exist:
+python src/analyze.py analysis=step25_quantum_circuit_ablation     analysis.run_root=logs/train/runs/step25_quantum_circuit_ablation     analysis.confirmation_summary=logs/analyze/runs/step06_confirm/step06_confirm_summary.json
+```
+
+Step 25 uses Step 6's confirmed recipe, like Step 24, and refuses to run without it.
+
 ---
 
 ## 4. Where results go
@@ -824,4 +989,5 @@ mid-range GPU. The proxy studies (Steps 6 and 8) are CPU-feasible at 10–25 min
 | 6 | 16, 17, 18 | Full metric battery with once-only test lock, Figshare external validation, degradation sweep, full image-to-logits pipeline |
 | 7 | 19, 20 | Grad-CAM, ViT attention rollout, SHAP, MC-dropout, deletion/insertion, paired bootstrap + McNemar, efficiency and separability |
 | 8 | 21, 22, 23 | A0–A8 + P ablation matrix with per-row pinned settings, Step 21 evaluation on the shared Step 16 metric battery, Holm-corrected four-hypothesis family, RQ1–RQ10 evidence map. Wired into the runner; **not yet run** |
-| — | 4–23 | `scripts/kaggle_pipeline.py` and `notebooks/kaggle_run.ipynb`: the whole study as one resumable command, plus the Kaggle Run-All notebook around it (§6). Steps 19–23 run at the end of the graph; Step 20 is handed Step 14's loss selection, and the Phase 8 rows are handed their own pinned settings rather than the study's running selections. Fixed `train.yaml`/`eval.yaml` still defaulting to the deleted `data/mnist` config. |
+| 8+ | 24 | Receptive-field strategy ladder: fixed 3×3 / 5×5 / dilated vs ungated multi-scale vs spatially adaptive, reusing the existing Step 11 arms. One formal hypothesis (H24) in its own family. Wired; **not yet run** |
+| — | 4–24 | `scripts/kaggle_pipeline.py` and `notebooks/kaggle_run.ipynb`: the whole study as one resumable command, plus the Kaggle Run-All notebook around it (§6). Steps 19–23 run at the end of the graph; Step 20 is handed Step 14's loss selection, and the Phase 8 rows are handed their own pinned settings rather than the study's running selections. Fixed `train.yaml`/`eval.yaml` still defaulting to the deleted `data/mnist` config. |

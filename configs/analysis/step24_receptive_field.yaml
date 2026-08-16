@@ -1,0 +1,86 @@
+# Step 24: receptive-field strategy ablation.
+#
+#   python src/analyze.py analysis=step24_receptive_field \
+#       analysis.run_root=logs/train/runs/step24_receptive_field \
+#       analysis.recipe=diffusion_i10_k15
+#
+# Answers one question: does spatially adaptive selection among multiple receptive fields
+# improve classification over conventional fixed-receptive-field convolution, and over
+# ungated multi-scale fusion of the same three fields?
+#
+# THE LADDER (all five are existing Step 11 arms - no new architecture):
+#
+#   FIXED_3X3            arm1_fixed_3x3       single 3x3
+#   FIXED_5X5            arm2_fixed_5x5       single 5x5
+#   FIXED_DILATED_3X3    arm3_fixed_dilated   single 3x3 dilation 3 (7x7 effective)
+#   MULTISCALE_NO_GATE   arm4_concat_nogate   all three, concat + learned 1x1 projection
+#   ADAPTIVE_MULTISCALE  arm6_spatial_gate    all three, per-pixel softmax gating
+#
+# ONE FORMAL HYPOTHESIS, IN ITS OWN FAMILY:
+#
+#   H24: ADAPTIVE_MULTISCALE vs MULTISCALE_NO_GATE
+#
+# Those two carry the identical three receptive fields, so the gate is the only difference
+# - which is what makes it the causal comparison. The three fixed-kernel comparisons change
+# receptive field AND parameter budget together, so they are descriptive and carry no
+# p-value.
+#
+# This family is SEPARATE from Phase 8's registered H1-H4. Appending to that family would
+# turn four Holm-corrected tests into five and weaken every one of them; Step 23's
+# `_check_family` refuses exactly that. Holm over a family of one is the identity here, and
+# is reported explicitly rather than left implicit.
+#
+# CAPACITY IS NOT MATCHED, and the output says so. The fixed conditions are smaller because
+# a single path is smaller. For H24 the relationship runs the other way - the ungated
+# control is the larger model - which is what stops a win for adaptivity being explained by
+# capacity. Counts are measured by building the arms, never tabulated.
+#
+# Step 24 does not alter Steps 21-23 and does not re-run them.
+
+_target_: src.analysis.receptive_field_study.ReceptiveFieldStudy
+
+name: step24_receptive_field
+
+_recursive_: false
+
+# Where the Step 24 training runs live: <run_root>/<condition>/seed_<n>.
+run_root: logs/train/runs/step24_receptive_field
+
+# THE PREPROCESSING RECIPE IS NOT CHOSEN HERE. It comes from Step 6's authoritative
+# confirmation - the real-backbone sweep, not the reduced-scale proxy ranking:
+#
+#   analysis.confirmation_summary=logs/analyze/runs/step06_confirm/step06_confirm_summary.json
+#
+# With no confirmation and no explicit override, this stage REFUSES TO RUN. That is
+# deliberate: Step 24 spends fifteen training runs deciding whether adaptive gating helps,
+# and running them on an unconfirmed preprocessing would make the answer apply to a
+# configuration the study does not ship. There is no fallback to the proxy ranking.
+confirmation_summary: null
+
+# Explicit override, mirroring the pipeline's `--recipe` flag. Takes precedence over the
+# confirmation. Use it deliberately - it bypasses the decision Step 6 exists to make.
+recipe: null
+
+# Step 15: "Run at least three seeds for the final model and major baselines."
+seeds: [42, 123, 7]
+
+alpha: 0.05
+
+confidence_level: 0.95
+
+# Matches Step 20's and Step 23's convention and src/utils/statistics.py's default.
+n_resamples: 2000
+
+# Every resampling procedure is seeded from here, so the report is reproducible.
+random_seed: 42
+
+# Which training seed the paired tests read. Fixed rather than best-of-three, matching how
+# every other stage in the study picks its checkpoint.
+paired_seed: 42
+
+n_calibration_bins: 10
+
+# Report a missing seed and carry on. Set true when the ladder is expected to be complete.
+strict: false
+
+accelerator: auto

@@ -1,0 +1,55 @@
+# Step 6 confirmation: turn the real-backbone sweep into the authoritative decision.
+#
+# Two commands, in order. The first is GPU training and is NOT run by this config:
+#
+#   # 1. materialise the candidates, then sweep them with the real backbone
+#   python src/prepare_dataset.py -m recipe=<non-identity candidates>
+#   python src/train.py -m experiment=step06_confirm \
+#       data.recipe=null,<candidates> trainer=gpu
+#
+#   # 2. read those runs and write the authoritative decision
+#   python src/analyze.py analysis=step06_confirm \
+#       analysis.run_root=logs/train/multiruns/<timestamp>
+#
+# `configs/experiment/step06_confirm.yaml` produces one run directory per candidate and
+# nothing else - no summary, no winner. This analysis closes that gap: it compares the runs
+# on validation macro-F1 and writes `step06_confirm_summary.json` with an explicit
+# `selected_recipe`, which Step 24 then consumes.
+#
+# NO WINNER IS ASSUMED. This analysis invents nothing: point it at an empty directory and
+# it fails, point it at a single recipe and it refuses to call that a comparison. The
+# `selected_recipe` field exists only once real runs support it.
+#
+# VALIDATION ONLY. Every training run's metrics.csv also carries test/* columns, because
+# `test: True` in configs/train.yaml is never overridden. Reading those would let the
+# internal test set decide a question that precedes Step 16, so the metric is validated to
+# start with `val/` and the analysis refuses anything else.
+#
+# The candidate set is chosen by whoever runs the sweep - this analysis reads whatever ran
+# rather than prescribing a list, so it cannot silently widen or narrow the comparison.
+
+_target_: src.analysis.preprocessing_confirmation.PreprocessingConfirmation
+
+name: step06_confirm
+
+_recursive_: false
+
+# The sweep directory, normally logs/train/multiruns/<timestamp>. Searched one level deep
+# for run directories, then recursively.
+run_root: null
+
+# Explicit run directories, used instead of searching run_root.
+run_dirs: null
+
+# `val/f1_macro_best` is the running best the ModelCheckpoint selected on, so it is the
+# score belonging to the checkpoint each run would actually ship. Must start with `val/`.
+metric: val/f1_macro_best
+
+# Fewer than two distinct recipes is not a comparison, and calling it one would make a
+# single training run look like a preprocessing decision.
+min_candidates: 2
+
+# Only runs whose overrides name this experiment are counted. The Step 9 baseline sweep
+# also varies by recipe; reading it would answer a different question with equal
+# confidence. Set to null to accept any run - a deliberate choice, not a default.
+require_experiment: step06_confirm

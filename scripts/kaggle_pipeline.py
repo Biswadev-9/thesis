@@ -145,6 +145,43 @@ from src.analysis.ablation_rows import (  # noqa: E402  (needs ROOT on sys.path 
 #: the adaptive quantum branch; together they dominate Phase 8's wall clock.
 QUANTUM_ABLATION_ROWS = {"A4", "A5"}
 
+from src.analysis.receptive_field_rows import (  # noqa: E402
+    CONDITIONS as RECEPTIVE_FIELD_CONDITIONS,
+)
+from src.analysis.preprocessing_confirmation import (  # noqa: E402
+    ConfirmationIncomplete,
+)
+from src.analysis.quantum_circuit_ablation_rows import (  # noqa: E402
+    CONDITIONS as QUANTUM_CIRCUIT_CONDITIONS,
+)
+from src.analysis.quantum_circuit_ablation_rows import (  # noqa: E402
+    QuantumAblationContext,
+)
+from src.analysis.quantum_circuit_ablation_rows import (  # noqa: E402
+    condition_overrides as quantum_condition_overrides,
+)
+from src.analysis.quantum_circuit_ablation_rows import (  # noqa: E402
+    get_condition as get_quantum_condition,
+)
+from src.analysis.receptive_field_rows import (  # noqa: E402
+    ReceptiveFieldContext,
+    condition_overrides,
+    get_condition,
+)
+
+#: Step 6's AUTHORITATIVE preprocessing decision, produced by the real-backbone
+#: confirmation sweep. Distinct from STEP06_SUMMARY, which is the reduced-scale proxy's
+#: ranking: the proxy ranks candidates, this one decides between them.
+STEP06_CONFIRM_SUMMARY = ("step06_confirm", "analyze", "step06_confirm_summary.json")
+
+#: Step 25's output namespace, separate from Step 24's and Phase 8's.
+QUANTUM_CIRCUIT_NAMESPACE = "step25_quantum_circuit_ablation"
+
+#: Step 24's output namespace. Separate from Phase 8's, so the receptive-field experiment
+#: cannot write over the ablation it was motivated by. Every condition is a classical CNN,
+#: so unlike Phase 8 none of these stages runs a quantum simulator.
+RECEPTIVE_FIELD_NAMESPACE = "step24_receptive_field"
+
 # ------------------------------------------------------------------------------------ #
 # Finding the dataset
 # ------------------------------------------------------------------------------------ #
@@ -815,6 +852,97 @@ class Pipeline:
         except ValueError as error:
             raise StageFailed(str(error)) from error
 
+    def confirm_candidates(self) -> List[str]:
+        """The recipes the real-backbone confirmation re-runs.
+
+        The proxy *ranks*; the confirmation *decides*. Which candidates it re-runs is a
+        scientific choice, so it is either stated explicitly with ``--confirm-recipes`` or
+        derived from the proxy's own ranking - never invented here.
+
+        The conventional reference (``data.recipe=null``) is always included: a
+        confirmation that cannot say "no preprocessing was as good" has not confirmed
+        anything.
+
+        :return: Candidate recipe names, ``"null"`` for the conventional reference.
+        :raises StageFailed: If neither an explicit list nor a proxy ranking is available.
+        """
+        if self.args.confirm_recipes:
+            explicit = [r.strip() for r in self.args.confirm_recipes.split(",") if r.strip()]
+            if "null" not in explicit and "conventional" not in explicit:
+                explicit.append("null")
+            return explicit
+
+        summary = self.read_summary(*STEP06_SUMMARY)
+        if summary is None:
+            raise StageFailed(
+                "the Step 6 confirmation needs candidates: run step06_preprocessing first "
+                "so its ranking can supply them, or pass --confirm-recipes explicitly."
+            )
+
+        ranking = summary.get("ranking") or []
+        if not ranking:
+            raise StageFailed(
+                "Step 6's proxy summary carries no ranking, so the confirmation has no "
+                "candidates. Pass --confirm-recipes explicitly."
+            )
+
+        ordered = [str(entry["recipe"]) for entry in ranking if entry.get("recipe")]
+        top = [r for r in ordered if r not in IDENTITY_RECIPES][: max(1, self.args.confirm_top_k)]
+        # The conventional reference is the thing every candidate must beat.
+        return [*top, "null"]
+
+    def confirm_seeds(self) -> List[int]:
+        """Seeds the confirmation sweep runs.
+
+        The full protocol set by default. The preprocessing decision is not a leaf: it
+        propagates to Steps 9-15, the shipped model, and every Step 24 and Step 25
+        condition. A single run would rank the candidates with no error bar, and this
+        repository's own proxy runs have already produced three different winners across
+        configurations - so a small gap must be distinguishable from a seed effect.
+
+        Follows ``--seeds``, so a shortened profile confirms at that profile's seeds.
+
+        :return: The seeds to sweep.
+        """
+        if self.args.confirm_seeds:
+            return [int(s) for s in self.args.confirm_seeds.split(",") if s.strip()]
+        return list(self.seeds)
+
+    def confirmation_is_available(self) -> bool:
+        """:return: Whether an authoritative Step 6 decision already exists on disk."""
+        return self.summary_path(*STEP06_CONFIRM_SUMMARY).is_file()
+
+    def confirmed_recipe_context(self) -> "ReceptiveFieldContext":
+        """The preprocessing Step 24 trains on, from Step 6's confirmation.
+
+        Deliberately NOT :meth:`selected_recipe`. That falls back to the proxy ranking,
+        which is exactly what must not silently decide a fifteen-run experiment: the proxy
+        ranks candidates with a SmallCNN at 128px, and its own summary asks for real-backbone
+        confirmation before committing.
+
+        ``--recipe`` still wins, because it is an explicit operator decision rather than an
+        implicit fallback.
+
+        :return: The shared context.
+        :raises StageFailed: If neither an override nor a confirmation is available.
+        """
+        if self.args.recipe is not None:
+            recipe = None if self.args.recipe in ("null", "none", "") else self.args.recipe
+            return ReceptiveFieldContext(recipe=recipe, source="--recipe override")
+
+        path = self.summary_path(*STEP06_CONFIRM_SUMMARY)
+        try:
+            return ReceptiveFieldContext.from_confirmation(path.as_posix())
+        except ConfirmationIncomplete as error:
+            raise StageFailed(
+                f"{error} "
+                "Step 24 will not run on an unconfirmed preprocessing recipe. Run the "
+                "confirmation sweep on the real backbone, then: "
+                "python src/analyze.py analysis=step06_confirm "
+                "analysis.run_root=logs/train/multiruns/<timestamp> "
+                "Or pass --recipe <name> to override deliberately."
+            ) from error
+
     def ablation_ckpt(self, row_id: str, seed: int) -> Optional[str]:
         """:param row_id: Ablation row.
 
@@ -1207,6 +1335,98 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
             _prepare,
             group="step06",
             note="write the chosen recipe to data/processed/ (skipped if identity)",
+        )
+    )
+
+    # -- Step 6 confirmation: the real backbone decides ----------------------------------
+    #
+    # The proxy ranks candidates with a SmallCNN at 128px; its own summary says to "confirm
+    # the top candidates with the real backbone on the full validation split before
+    # committing". Until that runs, the study has a RANKING, not a decision - and Steps 24
+    # and 25 refuse to start without one.
+    #
+    # Placed here so Run All reaches it long before the stages that consume it. The stages
+    # are resumable like every other: a completed confirmation writes .pipeline_done.json
+    # and is skipped, so it costs GPU once rather than once per invocation.
+    #
+    # Selection is on VALIDATION macro-F1. The internal test set stays sealed for Step 16.
+    def _confirm_materialise(recipe: str) -> Callable[[Pipeline], Optional[List[str]]]:
+        def build(p: Pipeline) -> Optional[List[str]]:
+            if recipe in ("null", *IDENTITY_RECIPES):
+                return None  # reads the raw tree; nothing to write
+            return [f"recipe={recipe}"]
+
+        return build
+
+    def _confirm_train(recipe: str, seed: int) -> Callable[[Pipeline], Optional[List[str]]]:
+        def build(p: Pipeline) -> Optional[List[str]]:
+            return [
+                "experiment=step06_confirm",
+                f"data.recipe={recipe}",
+                f"seed={seed}",
+                *p.trainer_override(quantum=False),
+                *p.loader_overrides(),
+                *p.train_shape(),
+                "logger=csv",
+            ]
+
+        return build
+
+    # Candidates are resolved once, at graph-construction time, so --list shows exactly
+    # what a run would train.
+    try:
+        confirm_recipes = pipe.confirm_candidates()
+        confirm_seeds = pipe.confirm_seeds()
+    except StageFailed:
+        # The proxy has not run yet. The confirmation stages cannot be enumerated, and the
+        # stages that consume the confirmation will refuse to build - which is the correct
+        # failure, and louder than a silently shorter graph.
+        confirm_recipes, confirm_seeds = [], []
+
+    for recipe in confirm_recipes:
+        if recipe not in ("null", *IDENTITY_RECIPES):
+            add(
+                Stage(
+                    f"step06_confirm_materialise/{recipe}",
+                    "prepare_dataset",
+                    _confirm_materialise(recipe),
+                    group="step06",
+                    note=f"materialise {recipe} for the confirmation sweep",
+                )
+            )
+
+    for recipe in confirm_recipes:
+        for seed in confirm_seeds:
+            add(
+                Stage(
+                    f"step06_confirm/{recipe}/seed_{seed}",
+                    "train",
+                    _confirm_train(recipe, seed),
+                    group="step06",
+                    is_train=True,
+                    note=f"confirmation: {recipe} on the real backbone (seed {seed})",
+                )
+            )
+
+    def _confirm_summary(p: Pipeline) -> Optional[List[str]]:
+        root = p.log_root / "train" / "runs" / "step06_confirm"
+        if not root.is_dir():
+            raise StageFailed(
+                "Step 6's confirmation summary is assembled from the confirmation runs; "
+                f"{root} does not exist. Run the step06_confirm stages first."
+            )
+        return [
+            "analysis=step06_confirm",
+            f"analysis.run_root={root.as_posix()}",
+        ]
+
+    add(
+        Stage(
+            "step06_confirm",
+            "analyze",
+            _confirm_summary,
+            group="step06",
+            note="AUTHORITATIVE preprocessing decision; Steps 24 and 25 consume it",
         )
     )
 
@@ -1742,6 +1962,151 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
         )
     )
 
+    # -- Step 24: receptive-field strategy ablation ------------------------------------------
+    #
+    # A self-contained experiment appended after Phase 8, not a change to it. It reads none
+    # of Steps 21-23's outputs and none of them read its, so the existing dependency graph
+    # is untouched and nothing here can retrain them.
+    #
+    # All five conditions are existing Step 11 arms; `condition_overrides` pins recipe,
+    # normalization, augmentation, sampler and loss per condition, so - as with the Phase 8
+    # rows - none of them goes through `_train_builder` and none inherits Step 6's or
+    # Step 8's selections.
+    def _receptive_field_row(
+        condition_id: str, seed: int
+    ) -> Callable[[Pipeline], Optional[List[str]]]:
+        def build(p: Pipeline) -> Optional[List[str]]:
+            condition = get_condition(condition_id)
+            context = p.confirmed_recipe_context()
+            return [
+                *condition_overrides(condition, seed=seed, context=context),
+                *p.trainer_override(quantum=False),
+                *p.loader_overrides(),
+                *p.train_shape(),
+                "logger=csv",
+            ]
+
+        return build
+
+    for condition in RECEPTIVE_FIELD_CONDITIONS:
+        for seed in seeds:
+            add(
+                Stage(
+                    f"{RECEPTIVE_FIELD_NAMESPACE}/{condition.condition_id}/seed_{seed}",
+                    "train",
+                    _receptive_field_row(condition.condition_id, seed),
+                    group="step24",
+                    is_train=True,
+                    note=f"{condition.condition_id}: {condition.receptive_field_strategy}",
+                )
+            )
+
+    def _receptive_field_eval(p: Pipeline) -> Optional[List[str]]:
+        missing = [
+            f"{c.condition_id}/seed_{seed}"
+            for c in RECEPTIVE_FIELD_CONDITIONS
+            for seed in p.seeds
+            if not p.branch_ckpt(f"{RECEPTIVE_FIELD_NAMESPACE}/{c.condition_id}/seed_{seed}")
+        ]
+        if missing:
+            raise StageFailed(
+                "Step 24 evaluates the checkpoints its five conditions produce; missing: "
+                f"{', '.join(missing)}"
+            )
+        run_root = p.log_root / "train" / "runs" / RECEPTIVE_FIELD_NAMESPACE
+        return [
+            f"analysis={RECEPTIVE_FIELD_NAMESPACE}",
+            f"analysis.run_root={run_root.as_posix()}",
+            # The one recipe every condition shares, from Step 6's confirmation. Passed
+            # explicitly so the analysis records the same value the conditions trained on.
+            f"analysis.recipe={p.confirmed_recipe_context().recipe or 'null'}",
+            f"analysis.seeds=[{','.join(str(s) for s in p.seeds)}]",
+            *p.loader_overrides(),
+        ]
+
+    add(
+        Stage(
+            RECEPTIVE_FIELD_NAMESPACE,
+            "analyze",
+            _receptive_field_eval,
+            group="step24",
+            note="fixed vs multi-scale vs spatially adaptive receptive fields (H24)",
+        )
+    )
+
+    # -- Step 25: quantum circuit adaptivity ------------------------------------------------
+    #
+    # Self-contained, appended after Step 24. Reads none of Steps 21-24's outputs and is read
+    # by none of them, so no existing dependency graph changes.
+    #
+    # All four conditions are the existing Step 12 class with different circuit lists; only
+    # `model.net.circuit_names` differs between them, and none goes through `_train_builder`.
+    #
+    # The adaptive condition evaluates five circuits per image on the CPU simulator, so it is
+    # kept off the accelerator like every other quantum stage.
+    def _quantum_circuit_row(
+        condition_id: str, seed: int
+    ) -> Callable[[Pipeline], Optional[List[str]]]:
+        def build(p: Pipeline) -> Optional[List[str]]:
+            condition = get_quantum_condition(condition_id)
+            recipe = p.confirmed_recipe_context().recipe
+            context = QuantumAblationContext(recipe=recipe, source="step06_confirm")
+            return [
+                *quantum_condition_overrides(condition, seed=seed, context=context),
+                *p.trainer_override(quantum=True),
+                *p.loader_overrides(),
+                *p.train_shape(),
+                "logger=csv",
+            ]
+
+        return build
+
+    for condition in QUANTUM_CIRCUIT_CONDITIONS:
+        for seed in seeds:
+            add(
+                Stage(
+                    f"{QUANTUM_CIRCUIT_NAMESPACE}/{condition.condition_id}/seed_{seed}",
+                    "train",
+                    _quantum_circuit_row(condition.condition_id, seed),
+                    group="step25",
+                    is_train=True,
+                    note=f"{condition.condition_id}: {condition.circuit_description}",
+                )
+            )
+
+    def _quantum_circuit_eval(p: Pipeline) -> Optional[List[str]]:
+        missing = [
+            f"{c.condition_id}/seed_{seed}"
+            for c in QUANTUM_CIRCUIT_CONDITIONS
+            for seed in p.seeds
+            if not p.branch_ckpt(
+                f"{QUANTUM_CIRCUIT_NAMESPACE}/{c.condition_id}/seed_{seed}"
+            )
+        ]
+        if missing:
+            raise StageFailed(
+                "Step 25 evaluates the checkpoints its four conditions produce; missing: "
+                f"{', '.join(missing)}"
+            )
+        run_root = p.log_root / "train" / "runs" / QUANTUM_CIRCUIT_NAMESPACE
+        return [
+            f"analysis={QUANTUM_CIRCUIT_NAMESPACE}",
+            f"analysis.run_root={run_root.as_posix()}",
+            f"analysis.recipe={p.confirmed_recipe_context().recipe or 'null'}",
+            f"analysis.seeds=[{','.join(str(s) for s in p.seeds)}]",
+            *p.loader_overrides(),
+        ]
+
+    add(
+        Stage(
+            QUANTUM_CIRCUIT_NAMESPACE,
+            "analyze",
+            _quantum_circuit_eval,
+            group="step25",
+            note="fixed vs adaptive quantum circuit mixture (H25), validation only",
+        )
+    )
+
     return stages
 
 
@@ -2110,6 +2475,27 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         dest="apply_selections",
         action="store_false",
         help="Do not feed the Step 6 and Step 8 choices into later stages.",
+    )
+    parser.add_argument(
+        "--confirm-recipes",
+        default=None,
+        help="Comma-separated candidates for the Step 6 real-backbone confirmation. "
+        "Defaults to the top --confirm-top-k of the proxy ranking plus the conventional "
+        "reference. This is a scientific choice: state it deliberately.",
+    )
+    parser.add_argument(
+        "--confirm-top-k",
+        type=int,
+        default=3,
+        help="How many proxy-ranked candidates the confirmation re-runs with the real "
+        "backbone when --confirm-recipes is not given.",
+    )
+    parser.add_argument(
+        "--confirm-seeds",
+        default=None,
+        help="Comma-separated seeds for the confirmation sweep. Defaults to the full "
+        "protocol seed set: the preprocessing decision governs every downstream stage, so "
+        "a single run cannot tell a real gap from a seed effect.",
     )
     parser.add_argument("--recipe", default=None, help="Force a preprocessing recipe.")
     parser.add_argument("--imbalance", default=None, help="Force a Step 8 strategy.")

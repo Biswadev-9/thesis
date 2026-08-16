@@ -1,0 +1,38 @@
+# @package _global_
+#
+# Step 24: base for the receptive-field strategy conditions.
+#
+# Conditions are not run by hand. src/analysis/receptive_field_rows.py defines the ladder
+# and emits the overrides, so a test can assert that all five differ in the receptive-field
+# strategy and in nothing else:
+#
+#   python src/train.py experiment=step24_receptive_field \
+#       model.net.arm=arm6_spatial_gate seed=42 loss@model.criterion=plain_ce \
+#       data.recipe=<Step 6 confirmed recipe> data.normalize=imagenet \
+#       data.augment=false data.use_weighted_sampler=false
+#
+# THIS FILE DECLARES NO recipe, normalization, augmentation, sampler OR loss. Every one of
+# those is a controlled variable of the experiment, and a default here is a value some
+# condition silently inherits. Contrast configs/experiment/step11_arm_ablation.yaml, which
+# sets `augment: true` and `use_weighted_sampler: true` and then has both overridden by the
+# pipeline's Step 8 selection - fine for the arm sweep, fatal for a controlled comparison.
+#
+# The recipe is whatever Step 6's real-backbone confirmation selected - never a value
+# chosen here, and never the reduced-scale proxy's ranking. All five conditions receive the
+# same one; see src/analysis/receptive_field_rows.py.
+#
+# The model is Step 11's, unchanged. All five conditions are existing arms of
+# MultiscaleClassifier; Step 24 introduces no new architecture, so the ladder cannot
+# disagree with the module it describes.
+#
+# The protocol is Step 15's, unmodified, so a difference between two conditions is the
+# receptive-field strategy rather than the training schedule.
+
+defaults:
+  - override /data: bt_mri
+  - override /model: branch_multiscale
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step24", "receptive-field", "ablation"]

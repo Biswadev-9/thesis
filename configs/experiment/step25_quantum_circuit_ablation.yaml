@@ -1,0 +1,45 @@
+# @package _global_
+#
+# Step 25: base for the quantum-circuit adaptivity conditions.
+#
+# Conditions are not run by hand. src/analysis/quantum_circuit_ablation_rows.py defines the
+# ladder and emits the overrides, so a test can assert that all four differ in
+# `model.net.circuit_names` and in nothing else:
+#
+#   python src/train.py experiment=step25_quantum_circuit_ablation \
+#       model.net.circuit_names=[fixed] seed=42 loss@model.criterion=plain_ce \
+#       data.recipe=<Step 6 confirmed recipe> data.normalize=imagenet \
+#       data.augment=false data.use_weighted_sampler=false
+#
+# THIS FILE DECLARES NO recipe, normalization, augmentation, sampler OR loss. Every one of
+# those is a controlled variable, and a default here is a value some condition silently
+# inherits. Contrast configs/experiment/step12_adaptive_quantum.yaml, which sets
+# `augment: true` and `use_weighted_sampler: true` and then has both overridden by the
+# pipeline's Step 8 selection - fine for training the branch, fatal for a controlled
+# comparison between four conditions.
+#
+# It also declares no `circuit_names`: that is THE experimental variable, and a default
+# would be one condition's value silently applied to another.
+#
+# The model is Step 12's, unchanged. All four conditions are AdaptiveQuantumClassifier with
+# different circuit lists; setting a single circuit makes the softmax mathematically inert
+# (a softmax over one element is identically 1.0), so no new architecture is needed and the
+# controls cannot drift from the model they control for.
+#
+# The recipe is whatever Step 6's real-backbone confirmation selected - never chosen here.
+# All four conditions receive the same one.
+#
+# The protocol is Step 15's, unmodified, so a difference between two conditions is the
+# circuit configuration rather than the training schedule.
+#
+# COST: the adaptive condition evaluates five circuits per image on a CPU simulator, the
+# fixed conditions one. Expect the adaptive runs to be roughly five times slower.
+
+defaults:
+  - override /data: bt_mri
+  - override /model: branch_adaptive_quantum
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step25", "quantum", "circuit-ablation"]
