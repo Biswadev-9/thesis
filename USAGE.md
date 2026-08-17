@@ -878,6 +878,31 @@ training run is also given a `trainer.max_time` matching the time left in
 a session at 12 hours and the full study needs three or four of them, so this is the
 difference between the study finishing and never finishing.
 
+That marker is **validated, not counted**. It is parsed, it has to record a zero exit, and
+the artefact the stage exists to produce — a summary for an analysis, a checkpoint for a
+training run — has to still be on disk. A marker truncated by the kill that ended the
+session, or one whose outputs did not come back with `--restore-from`, prints `[stale]`
+with the reason and the stage re-runs. A stage that exits zero *without* its artefact is
+recorded as failed rather than marked done, so a silent no-op cannot become permanent.
+Every marker and summary is written through a temporary file and `os.replace`, so no
+reader ever sees half of one.
+
+A run that was interrupted is not a run that finished, and the two are told apart by that
+marker rather than by a `checkpoints/` directory — which a run killed at epoch two also
+has, holding an `epoch_002.ckpt` that `find_checkpoint` cannot distinguish from a
+converged run's best epoch. Steps 20, 21, 24 and 25 will not evaluate a branch that has
+not completed.
+
+**Aggregates go stale when their inputs grow.** Steps 21, 24, 25 and the Step 6
+confirmation record which training runs they were computed from. If a later session
+finishes runs that were missing at the time, the aggregate is recomputed instead of
+standing as the answer forever. The Step 6 confirmation additionally refuses to build at
+all until every `(candidate, seed)` cell of its design is complete, and the analysis
+refuses an unbalanced comparison — a decision that sets preprocessing for Steps 24, 25 and
+the shipped model may not rest on one candidate measured at three seeds and the next at
+one. A resumed confirmation run is read across every `csv/version_*` segment Lightning
+wrote, so an interruption cannot quietly cost a candidate the epochs it trained after it.
+
 **Carries the selections forward.** Steps 6, 8 and 14 *choose* something. The pipeline
 reads `selected_recipe`, `selected_strategy` and `selected_loss` back out of the summary
 JSON each study writes and applies them to every stage downstream — materialising the

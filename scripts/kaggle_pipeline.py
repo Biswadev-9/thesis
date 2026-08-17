@@ -17,6 +17,14 @@ session dies costs nothing. Training runs additionally resume mid-run from
 ``last.ckpt``, and are given a ``trainer.max_time`` matching the remaining time
 budget so they stop cleanly and save rather than being killed.
 
+That marker is *validated*, not merely counted. It is parsed, it must record a
+zero exit, the artefact the stage exists to produce must still be on disk, and a
+stage that aggregates other stages must find the same set of completed inputs it
+was built from. A marker truncated by a kill, or one whose outputs were lost with
+a dead session's filesystem, re-runs the stage instead of skipping it - and an
+aggregate built from a partial sweep is recomputed once the rest of the sweep
+lands rather than standing as the answer forever.
+
 **Selection propagation.** Steps 6, 8, 13 and 14 are studies that *choose*
 something. Their choices are read back out of the summary JSON they write and
 applied to the stages downstream, which is what the specification intends and
@@ -140,6 +148,7 @@ from src.analysis.ablation_rows import (  # noqa: E402  (needs ROOT on sys.path 
     get_row,
     row_overrides,
 )
+from src.utils.atomic import atomic_write_json, atomic_write_text  # noqa: E402
 
 #: Rows whose forward pass runs a circuit on the CPU simulator. A4 is the fixed QCNN and A5
 #: the adaptive quantum branch; together they dominate Phase 8's wall clock.
@@ -513,6 +522,10 @@ class Stage:
     :param is_train: Training stages get a time cap and mid-run resume.
     :param optional: A failure is recorded and the pipeline continues.
     :param note: One line shown in ``--list``.
+    :param inputs: For a stage that aggregates other stages, the ids it aggregates. The
+        set of those that were complete is fingerprinted into the marker, so an aggregate
+        computed from a partial sweep is recomputed once the rest of the sweep lands
+        instead of standing as the answer forever.
     """
 
     id: str
@@ -522,6 +535,7 @@ class Stage:
     is_train: bool = False
     optional: bool = False
     note: str = ""
+    inputs: Optional[Callable[["Pipeline"], List[str]]] = None
 
 
 # ------------------------------------------------------------------------------------ #
@@ -954,10 +968,107 @@ class Pipeline:
     def branch_ckpt(self, stage_id: str) -> Optional[str]:
         """:param stage_id: A training stage id.
 
-        :return: Its run directory as a POSIX path, or ``None`` if it never ran.
+        :return: Its run directory as a POSIX path, or ``None`` if it did not COMPLETE.
+
+        A ``checkpoints/`` directory is not evidence that a run finished. A run killed at
+        epoch two has one, holding an ``epoch_002.ckpt`` that ``find_checkpoint`` cannot
+        tell from a converged run's best epoch - so an evaluation would score a
+        half-trained model and report it as a condition of the study. Completion is what
+        is asked for here, and the completion marker is what records it.
         """
         path = self.log_root / "train" / "runs" / stage_id
-        return path.as_posix() if (path / "checkpoints").is_dir() else None
+        complete, _ = self.run_is_complete("train", stage_id, is_train=True)
+        return path.as_posix() if complete else None
+
+    # -- completion ------------------------------------------------------------------
+
+    def expected_artifacts(self, entry: str, stage_id: str, is_train: bool) -> List[str]:
+        """What a finished stage must have left behind, as globs under its run directory.
+
+        The marker says a stage exited zero. It cannot say the outputs survived: a Kaggle
+        session's filesystem does not, and ``--restore-from`` copies back a tree that may
+        be missing whatever the previous session was mid-way through writing.
+
+        :param entry: Entry point the stage ran under.
+        :param stage_id: Stage identifier.
+        :param is_train: Whether it is a training stage.
+        :return: Glob patterns, all of which must match at least one file.
+        """
+        if is_train:
+            return ["checkpoints/*.ckpt"]
+        if entry == "analyze":
+            # Every analysis writes `<name>_summary.json`, and every analyze stage is named
+            # for the analysis it runs - `test_analyze_stage_ids_name_their_analysis`
+            # fails if that ever stops being true.
+            return [f"{stage_id}_summary.json"]
+        # prepare_dataset and extract_features write outside the run directory (into
+        # data/processed and data/features), so there is nothing here to check.
+        return []
+
+    def run_is_complete(
+        self, entry: str, stage_id: str, is_train: bool = False, fingerprint: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Decide whether a stage genuinely finished.
+
+        :param entry: Entry point the stage ran under.
+        :param stage_id: Stage identifier.
+        :param is_train: Whether it is a training stage.
+        :param fingerprint: Expected input fingerprint, for an aggregating stage.
+        :return: ``(complete, reason it is not)``.
+        """
+        out = self.out_dir_for(entry, stage_id)
+        marker = out / ".pipeline_done.json"
+
+        if not marker.is_file():
+            return False, "no completion marker"
+
+        try:
+            record = json.loads(marker.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # A marker truncated by a kill mid-write. Existence used to be the whole test,
+            # so an empty one counted as a finished stage.
+            return False, "completion marker is unreadable"
+
+        if not isinstance(record, dict):
+            return False, "completion marker is not a record"
+        if record.get("status") != "done":
+            return False, f"marker records status={record.get('status')!r}"
+        if record.get("returncode") not in (0, None):
+            return False, f"marker records exit {record.get('returncode')}"
+
+        for pattern in self.expected_artifacts(entry, stage_id, is_train):
+            if not any(out.glob(pattern)):
+                return False, f"{pattern} is missing from {out.name}"
+
+        if fingerprint is not None and record.get("inputs_fingerprint") != fingerprint:
+            return False, "its inputs changed since it ran"
+
+        return True, ""
+
+    def input_fingerprint(self, stage: Stage) -> Optional[str]:
+        """Identify the completed inputs an aggregating stage would read.
+
+        :param stage: The stage.
+        :return: A stable digest, or ``None`` when the stage aggregates nothing.
+        """
+        if stage.inputs is None:
+            return None
+        try:
+            required = sorted(stage.inputs(self))
+        except StageFailed:
+            # The graph cannot enumerate them yet, which the build will report properly.
+            return None
+        done = [sid for sid in required if self.run_is_complete("train", sid, is_train=True)[0]]
+        return f"{len(done)}/{len(required)}:" + ",".join(done)
+
+    def stage_is_complete(self, stage: Stage) -> Tuple[bool, str]:
+        """:param stage: The stage to test.
+
+        :return: ``(complete, reason it is not)``.
+        """
+        return self.run_is_complete(
+            stage.entry, stage.id, stage.is_train, self.input_fingerprint(stage)
+        )
 
     # -- execution -------------------------------------------------------------------
 
@@ -1053,10 +1164,16 @@ class Pipeline:
         out = self.out_dir(stage)
         marker = out / ".pipeline_done.json"
 
-        if marker.exists() and not self.args.force:
-            self.echo(f"  [cached]  {stage.id}  ->  {out.relative_to(self.root).as_posix()}")
-            self.records.append({"stage": stage.id, "status": "cached", "out_dir": str(out)})
-            return "cached"
+        if not self.args.force:
+            complete, reason = self.stage_is_complete(stage)
+            if complete:
+                self.echo(f"  [cached]  {stage.id}  ->  {out.relative_to(self.root).as_posix()}")
+                self.records.append({"stage": stage.id, "status": "cached", "out_dir": str(out)})
+                return "cached"
+            if marker.is_file():
+                # A marker that does not survive validation is worse than none: it is the
+                # reason a bad stage would have been skipped silently. Say so, then re-run.
+                self.echo(f"  [stale]   {stage.id}  ({reason}); re-running")
 
         try:
             overrides = stage.build(self)
@@ -1155,14 +1272,35 @@ class Pipeline:
             record["status"] = "partial"
             record["truncated_by_budget"] = True
             self.records.append(record)
-            (out / ".pipeline_partial.json").write_text(json.dumps(record, indent=2))
+            atomic_write_json(out / ".pipeline_partial.json", record)
             self.echo(f"  [partial] {stage.id} hit the time cap; it will resume next session")
             raise BudgetExhausted(f"{stage.id} was cut short by the time budget")
 
         record["profile"] = self.args.profile
         record["protocol_intact"] = self.protocol_intact
         record["finished"] = _now()
-        marker.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        fingerprint = self.input_fingerprint(stage)
+        if fingerprint is not None:
+            record["inputs_fingerprint"] = fingerprint
+
+        missing = [
+            pattern
+            for pattern in self.expected_artifacts(stage.entry, stage.id, stage.is_train)
+            if not any(out.glob(pattern))
+        ]
+        if missing:
+            # Exit zero without the artefact means the stage did not do its job. Writing a
+            # marker here would make the failure permanent and silent.
+            record["status"] = "failed"
+            record["missing_artifacts"] = missing
+            self.records.append(record)
+            self.echo(f"  [FAIL]    {stage.id} exited 0 but produced no {', '.join(missing)}")
+            if stage.optional:
+                return "failed"
+            raise StageFailed(f"{stage.id} produced no {', '.join(missing)}")
+
+        # Atomic: a marker truncated by a kill mid-write used to count as a finished stage.
+        atomic_write_json(marker, record)
         (out / ".pipeline_partial.json").unlink(missing_ok=True)
         self.records.append(record)
         self.echo(f"  [ok]      {stage.id}  in {elapsed / 60:.1f} min")
@@ -1408,6 +1546,17 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
                 )
             )
 
+    def _confirm_run_ids(p: Pipeline) -> List[str]:
+        """:param p: The pipeline.
+
+        :return: Every ``(recipe, seed)`` cell the confirmation design requires.
+        """
+        return [
+            f"step06_confirm/{recipe}/seed_{seed}"
+            for recipe in confirm_recipes
+            for seed in confirm_seeds
+        ]
+
     def _confirm_summary(p: Pipeline) -> Optional[List[str]]:
         root = p.log_root / "train" / "runs" / "step06_confirm"
         if not root.is_dir():
@@ -1415,6 +1564,24 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
                 "Step 6's confirmation summary is assembled from the confirmation runs; "
                 f"{root} does not exist. Run the step06_confirm stages first."
             )
+
+        # The decision must rest on the WHOLE design. A session killed between two
+        # candidates leaves the earlier ones confirmed at every seed and the later ones at
+        # one, and a mean over one seed is a draw, not an estimate. The analysis refuses an
+        # unbalanced comparison on its own, but only this side knows which cells were
+        # intended, so a crash before any run of the last seed is caught here.
+        required = _confirm_run_ids(p)
+        missing = [sid for sid in required if not p.run_is_complete("train", sid, True)[0]]
+        if missing:
+            raise StageFailed(
+                f"Step 6's confirmation design is {len(required) - len(missing)}/"
+                f"{len(required)} complete; the decision it feeds - preprocessing for "
+                "Steps 24, 25 and the shipped model - may not rest on part of it. "
+                f"Missing: {', '.join(missing[:6])}"
+                + (f" (+{len(missing) - 6} more)" if len(missing) > 6 else "")
+                + ".\nRe-run the same command; the finished confirmations are skipped."
+            )
+
         return [
             "analysis=step06_confirm",
             f"analysis.run_root={root.as_posix()}",
@@ -1427,6 +1594,7 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
             _confirm_summary,
             group="step06",
             note="AUTHORITATIVE preprocessing decision; Steps 24 and 25 consume it",
+            inputs=_confirm_run_ids,
         )
     )
 
@@ -1909,6 +2077,12 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
             _ablation_eval,
             group="step21",
             note="evaluate every ablation row on the internal test set",
+            inputs=lambda p: [
+                f"{ABLATION_NAMESPACE}/{row.row_id}/seed_{seed}"
+                for row in ABLATION_ROWS
+                if row.trains
+                for seed in p.seeds
+            ],
         )
     )
 
@@ -2031,6 +2205,11 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
             _receptive_field_eval,
             group="step24",
             note="fixed vs multi-scale vs spatially adaptive receptive fields (H24)",
+            inputs=lambda p: [
+                f"{RECEPTIVE_FIELD_NAMESPACE}/{c.condition_id}/seed_{seed}"
+                for c in RECEPTIVE_FIELD_CONDITIONS
+                for seed in p.seeds
+            ],
         )
     )
 
@@ -2104,6 +2283,11 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
             _quantum_circuit_eval,
             group="step25",
             note="fixed vs adaptive quantum circuit mixture (H25), validation only",
+            inputs=lambda p: [
+                f"{QUANTUM_CIRCUIT_NAMESPACE}/{c.condition_id}/seed_{seed}"
+                for c in QUANTUM_CIRCUIT_CONDITIONS
+                for seed in p.seeds
+            ],
         )
     )
 
@@ -2258,9 +2442,7 @@ def write_report(pipe: Pipeline) -> Path:
         "stages": pipe.records,
     }
     pipe.pipeline_dir.mkdir(parents=True, exist_ok=True)
-    (pipe.pipeline_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2), encoding="utf-8"
-    )
+    atomic_write_json(pipe.pipeline_dir / "manifest.json", manifest)
 
     lines = [
         "# Pipeline report",
@@ -2315,7 +2497,7 @@ def write_report(pipe: Pipeline) -> Path:
         lines.append("_No summaries written yet._")
 
     report = pipe.pipeline_dir / "REPORT.md"
-    report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(report, "\n".join(lines) + "\n")
     return report
 
 
@@ -2575,7 +2757,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.list:
         width = max(len(s.id) for s in stages)
         for stage in stages:
-            done = (pipe.out_dir(stage) / ".pipeline_done.json").exists()
+            done, _ = pipe.stage_is_complete(stage)
             print(f"{'x' if done else ' '} {stage.id:<{width}}  {stage.note}")
         print(f"\n{len(stages)} stages · seeds {pipe.seeds} · profile {args.profile}")
         return 0

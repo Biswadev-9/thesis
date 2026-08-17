@@ -396,7 +396,16 @@ def test_the_config_tree_dump_is_switched_off(tmp_path):
 
     stage = next(s for s in kp.build_stages(pipe) if s.is_train)
     seen = []
-    pipe._spawn = lambda argv, log_path: (seen.append(argv), (0, False))[1]
+
+    def spawn(argv, log_path):
+        """A stage that exits zero must also leave the artefact it exists to produce."""
+        seen.append(argv)
+        checkpoints = pipe.out_dir(stage) / "checkpoints"
+        checkpoints.mkdir(parents=True, exist_ok=True)
+        (checkpoints / "epoch_000.ckpt").write_bytes(b"")
+        return 0, False
+
+    pipe._spawn = spawn
     pipe.run_stage(stage)
 
     assert "extras.print_config=false" in seen[0]

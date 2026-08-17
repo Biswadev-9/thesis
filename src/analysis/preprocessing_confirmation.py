@@ -32,6 +32,19 @@ with `val/`, and a test enforces it.
 **Only genuine confirmation runs count.** Each run's `.hydra/overrides.yaml` must name
 `experiment=step06_confirm`. Pointing this at the Step 9 baseline sweep, which also varies
 by recipe, would otherwise produce a confident answer to a different question.
+
+**Resumed runs are read whole.** Lightning's `CSVLogger` versions its output directory, so
+a run that is killed and resumed writes `csv/version_0/` for the epochs before the crash
+and `csv/version_1/` for the epochs after it. Reading `version_0` alone would score that
+candidate on the training it had completed at the moment the session died - silently, and
+in the direction of a worse score, because the value is present and nothing looks wrong.
+Every segment is read and the run's best validation score is taken across all of them.
+
+**A comparison must be balanced.** Every candidate is confirmed at the same seeds, or the
+confirmation is not authoritative. A crash between two candidates otherwise leaves one
+ranked on three seeds and the next on one, and the winner can be a seed effect. Which
+candidates and which seeds are still whoever ran the sweep's decision; this module only
+refuses to call an unbalanced comparison a decision.
 """
 
 import json
@@ -87,6 +100,9 @@ class PreprocessingConfirmation(Analysis):
     :param min_candidates: Fewest distinct recipes that count as a comparison.
     :param require_experiment: Only accept runs whose overrides name this experiment.
         Set to ``None`` to accept any run, which should be a deliberate choice.
+    :param require_balanced: Refuse to decide when the candidates were not confirmed at
+        the same seeds. Turning this off records the imbalance instead of raising, and
+        makes the result unquotable.
     """
 
     def __init__(
@@ -97,6 +113,7 @@ class PreprocessingConfirmation(Analysis):
         metric: str = DEFAULT_METRIC,
         min_candidates: int = 2,
         require_experiment: Optional[str] = CONFIRMATION_EXPERIMENT,
+        require_balanced: bool = True,
     ) -> None:
         super().__init__(name=name)
         self.run_root = run_root
@@ -104,6 +121,7 @@ class PreprocessingConfirmation(Analysis):
         self.metric = metric
         self.min_candidates = min_candidates
         self.require_experiment = require_experiment
+        self.require_balanced = require_balanced
 
     # -------------------------------------------------------------------- compute
 
@@ -123,6 +141,7 @@ class PreprocessingConfirmation(Analysis):
             )
 
         runs = self._collect()
+        design = self._check_design(runs)
         recipes = self._aggregate(runs)
         winner = max(recipes.values(), key=lambda r: r["mean"])
 
@@ -136,6 +155,7 @@ class PreprocessingConfirmation(Analysis):
             "n_candidates": len(recipes),
             "n_runs": len(runs),
             "seeds": sorted({r["seed"] for r in runs if r["seed"] is not None}),
+            "design": design,
             "candidates": [
                 recipes[name] for name in sorted(recipes, key=lambda k: -recipes[k]["mean"])
             ],
@@ -146,6 +166,10 @@ class PreprocessingConfirmation(Analysis):
                     "seed": r["seed"],
                     "metric_value": r["value"],
                     "metric": self.metric if r["metric_used"] is None else r["metric_used"],
+                    # Which CSVLogger segments the score came from. More than one means the
+                    # run was interrupted and resumed, and that all of it was read.
+                    "metric_segments": r["segments"],
+                    "resumed": len(r["segments"]) > 1,
                 }
                 for r in runs
             ],
@@ -200,7 +224,7 @@ class PreprocessingConfirmation(Analysis):
         if not found:
             raise ConfirmationIncomplete(
                 f"No Hydra run directories under {root}. Expected one subdirectory per "
-                "candidate, each with .hydra/overrides.yaml and csv/version_0/metrics.csv."
+                "candidate, each with .hydra/overrides.yaml and csv/version_*/metrics.csv."
             )
         return found
 
@@ -226,10 +250,16 @@ class PreprocessingConfirmation(Analysis):
                 skipped.append(f"{directory}: experiment={experiment!r}, not confirmation")
                 continue
 
-            value, metric_used = _read_metric(directory, self.metric)
+            value, metric_used, segments = _read_metric(directory, self.metric)
             if value is None:
                 skipped.append(f"{directory}: no {self.metric} in metrics.csv")
                 continue
+
+            if len(segments) > 1:
+                log.info(
+                    f"Step 6 confirmation read {len(segments)} CSV segments from "
+                    f"{directory} ({', '.join(segments)}): the run was resumed."
+                )
 
             records.append(
                 {
@@ -239,6 +269,7 @@ class PreprocessingConfirmation(Analysis):
                     "model": _override_value(overrides, "model"),
                     "value": value,
                     "metric_used": metric_used if metric_used != self.metric else None,
+                    "segments": segments,
                 }
             )
 
@@ -257,6 +288,62 @@ class PreprocessingConfirmation(Analysis):
                 "data.recipe=<candidates> trainer=gpu"
             )
         return records
+
+    def _check_design(self, runs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        """Refuse a comparison in which the candidates did not run the same seeds.
+
+        A session killed between two candidates leaves the earlier ones with the full seed
+        set and the later ones with part of it. Comparing their means then compares a
+        three-seed estimate against a one-seed draw, and the winner can be a seed effect
+        rather than a preprocessing effect.
+
+        What this can see is the seeds that *appear*. A crash before any run of the last
+        seed leaves every candidate short of it equally, which looks balanced from here -
+        the driver knows the intended design and guards that case before this stage is
+        allowed to run.
+
+        :param runs: Per-run records.
+        :return: The design description recorded in the summary.
+        :raises ConfirmationIncomplete: If the design is unbalanced and balance is required.
+        """
+        seeds_by_recipe: Dict[str, set] = {}
+        for record in runs:
+            seeds_by_recipe.setdefault(record["recipe"], set()).add(record["seed"])
+
+        observed = set().union(*seeds_by_recipe.values()) if seeds_by_recipe else set()
+
+        def order(seeds: Any) -> List[Any]:
+            return sorted(seeds, key=lambda s: (s is None, s))
+
+        missing = {
+            recipe: order(observed - seeds)
+            for recipe, seeds in seeds_by_recipe.items()
+            if observed - seeds
+        }
+
+        design = {
+            "seeds_observed": order(observed),
+            "seeds_per_candidate": {r: order(s) for r, s in seeds_by_recipe.items()},
+            "candidates_missing_seeds": missing,
+            "balanced": not missing,
+        }
+
+        if missing and self.require_balanced:
+            detail = "; ".join(
+                f"{recipe} is missing seed(s) {seeds}" for recipe, seeds in missing.items()
+            )
+            raise ConfirmationIncomplete(
+                "Step 6 confirmation is not balanced, so it cannot decide: "
+                f"{detail}. Every candidate must be confirmed at the same seeds, or a "
+                "single unlucky draw decides the preprocessing for Steps 24, 25 and the "
+                "shipped model.\nFinish the sweep and re-run this stage. Setting "
+                "analysis.require_balanced=false records the imbalance instead, and makes "
+                "the result unquotable."
+            )
+        if missing:
+            log.warning(f"Step 6 confirmation is UNBALANCED and not authoritative: {missing}")
+
+        return design
 
     def _aggregate(self, runs: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         """Group runs by recipe and summarise across seeds.
@@ -424,30 +511,75 @@ def _seed_of(overrides: Sequence[str]) -> Optional[int]:
         return None
 
 
-def _read_metric(run_dir: Path, metric: str) -> Tuple[Optional[float], Optional[str]]:
-    """Read one run's best validation score.
+def _metrics_segments(run_dir: Path) -> List[Path]:
+    """Every ``metrics.csv`` one run produced, oldest first.
+
+    Lightning's ``CSVLogger`` calls ``_get_next_version()`` when it starts, so it never
+    writes into a version directory that already exists. A run resumed from ``last.ckpt``
+    into the same pinned Hydra directory therefore writes ``csv/version_1/`` while its
+    pre-crash epochs stay in ``csv/version_0/``. Both are that one run's output.
+
+    :param run_dir: A Hydra run directory.
+    :return: The segment files, ordered by version number.
+    """
+    root = run_dir / "csv"
+    if not root.is_dir():
+        return []
+
+    found: List[Tuple[int, str, Path]] = []
+    for directory in root.iterdir():
+        if not directory.is_dir() or not directory.name.startswith("version_"):
+            continue
+        path = directory / "metrics.csv"
+        if not path.is_file():
+            # A run killed before its first flush leaves the directory and no file.
+            continue
+        suffix = directory.name.split("_", 1)[1]
+        found.append((int(suffix) if suffix.isdigit() else -1, directory.name, path))
+
+    return [path for _, _, path in sorted(found, key=lambda item: (item[0], item[1]))]
+
+
+def _read_metric(
+    run_dir: Path, metric: str
+) -> Tuple[Optional[float], Optional[str], List[str]]:
+    """Read one run's best validation score, across every segment it wrote.
 
     Only the requested ``val/`` column and its fallback are touched. The same file carries
     ``test/*`` columns, and this function must never return one.
 
+    The score is the maximum over all segments. For ``val/f1_macro_best`` - a running best
+    whose state is restored from the checkpoint - the last segment already carries it, and
+    the maximum agrees. For the plain fallback column the maximum over the whole run is
+    what the previous single-segment reader computed within one segment, so a resumed run
+    now yields the same answer an uninterrupted one would.
+
     :param run_dir: A Hydra run directory.
     :param metric: Validation metric to read.
-    :return: ``(value, metric_actually_used)``, or ``(None, None)``.
+    :return: ``(value, metric_actually_used, segment names read)``.
     """
-    path = run_dir / "csv" / "version_0" / "metrics.csv"
-    if not path.is_file():
-        return (None, None)
+    segments = _metrics_segments(run_dir)
 
-    try:
-        frame = pd.read_csv(path)
-    except Exception:  # pragma: no cover - unreadable metrics file
-        return (None, None)
+    frames: List[Tuple[str, pd.DataFrame]] = []
+    for path in segments:
+        try:
+            frames.append((path.parent.name, pd.read_csv(path)))
+        except Exception:  # pragma: no cover - unreadable or truncated segment
+            log.warning(f"Step 6 confirmation could not read {path}; ignoring that segment")
 
     for column in (metric, FALLBACK_METRIC):
         if not column.startswith("val/"):
             continue
-        if column in frame.columns:
+        values: List[float] = []
+        used: List[str] = []
+        for name, frame in frames:
+            if column not in frame.columns:
+                continue
             series = frame[column].dropna()
             if not series.empty:
-                return (float(series.max()), column)
-    return (None, None)
+                values.append(float(series.max()))
+                used.append(name)
+        if values:
+            return (max(values), column, used)
+
+    return (None, None, [name for name, _ in frames])

@@ -53,3 +53,9 @@ min_candidates: 2
 # also varies by recipe; reading it would answer a different question with equal
 # confidence. Set to null to accept any run - a deliberate choice, not a default.
 require_experiment: step06_confirm
+
+# Every candidate must be confirmed at the same seeds. A session killed part-way through
+# the sweep otherwise leaves one candidate ranked on three seeds and the next on one, and
+# the winner can be the seed rather than the preprocessing. Setting this false records the
+# imbalance in the summary instead of refusing, and makes the decision unquotable.
+require_balanced: true

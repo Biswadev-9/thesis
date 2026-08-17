@@ -10,13 +10,13 @@ hard-coded Google Drive paths, so its outputs were not tied to the run that prod
 them and could be silently overwritten by a later re-run.
 """
 
-import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
 from src.utils import RankedLogger
+from src.utils.atomic import atomic_write, atomic_write_json
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
@@ -80,7 +80,9 @@ class Analysis:
         :return: The path written.
         """
         path = self.output_dir / filename
-        df.to_csv(path, index=index)
+        # Atomic: a sweep rewrites this file after every candidate, so a kill during a
+        # rewrite would otherwise destroy the completed rows it exists to preserve.
+        atomic_write(path, lambda temporary: df.to_csv(temporary, index=index))
         if not quiet:
             log.info(f"[{self.name}] wrote {path.name} ({len(df)} rows)")
         return path
@@ -93,8 +95,10 @@ class Analysis:
         :return: The path written.
         """
         path = self.output_dir / filename
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, default=str)
+        # Atomic: downstream stages decide what to train from these summaries, and a
+        # truncated one is worse than an absent one - `read_summary` would raise on the
+        # absent file and silently misread nothing at all.
+        atomic_write_json(path, payload, default=str)
         log.info(f"[{self.name}] wrote {path.name}")
         return path
 

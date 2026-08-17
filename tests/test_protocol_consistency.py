@@ -25,6 +25,8 @@ import pytest
 from hydra import compose, initialize
 from hydra.core.global_hydra import GlobalHydra
 
+from tests.helpers.completed_runs import mark_run_complete
+
 
 def compose_config(config_name: str, *overrides: str):
     """Compose a config in isolation from other tests.
@@ -389,11 +391,11 @@ def _wired_pipeline(tmp_path, monkeypatch, selected=None, **overrides):
         run.parent.mkdir(parents=True, exist_ok=True)
         run.write_text(json.dumps({"selected_loss": selected}), encoding="utf-8")
 
-    # The three checkpoints Step 20 compares; only their presence is checked.
+    # The three checkpoints Step 20 compares. Marked complete, not merely present: a
+    # checkpoint directory is also what a run killed at epoch two leaves behind, and Step
+    # 20 asks for finished branches.
     for stage in ("step10_classical", "step12_adaptive_quantum", "step15_final"):
-        (pipe.log_root / "train" / "runs" / stage / "seed_42" / "checkpoints").mkdir(
-            parents=True, exist_ok=True
-        )
+        mark_run_complete(pipe.log_root / "train" / "runs" / stage / "seed_42")
     return kp, pipe
 
 

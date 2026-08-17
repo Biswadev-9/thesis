@@ -33,6 +33,7 @@ from hydra import compose, initialize
 from hydra.core.global_hydra import GlobalHydra
 
 from src.analysis.ablation_rows import DIFFUSION_FEATURE_TAG, PROTOCOL_SEEDS, ROWS
+from tests.helpers.completed_runs import mark_run_complete
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -334,8 +335,9 @@ def test_the_a6_feature_cache_is_built_from_the_diffusion_branches(pipe):
     assert order.index(stage.id) < order.index("step21_ablation/A6/seed_42")
 
     for row in ("A2", "A5"):
-        (pipe.log_root / "train" / "runs" / "step21_ablation" / row / "seed_42"
-         / "checkpoints").mkdir(parents=True, exist_ok=True)
+        mark_run_complete(
+            pipe.log_root / "train" / "runs" / "step21_ablation" / row / "seed_42"
+        )
 
     overrides = stage.build(pipe)
     assert f"tag={DIFFUSION_FEATURE_TAG}" in overrides
@@ -401,14 +403,18 @@ def test_step21_refuses_to_evaluate_before_the_rows_are_trained(pipe):
 
 
 def _train_all_rows(pipe):
-    """Create checkpoint directories for every trainable row and seed.
+    """Mark every trainable row and seed as a training run that finished.
+
+    A checkpoint directory alone is what an interrupted run leaves; Step 21 asks for
+    completion, so these fixtures have to record it.
 
     :param pipe: The pipeline.
     """
     for row_id in TRAINING_ROWS:
         for seed in PROTOCOL_SEEDS:
-            (pipe.log_root / "train" / "runs" / "step21_ablation" / row_id / f"seed_{seed}"
-             / "checkpoints").mkdir(parents=True, exist_ok=True)
+            mark_run_complete(
+                pipe.log_root / "train" / "runs" / "step21_ablation" / row_id / f"seed_{seed}"
+            )
 
 
 def test_step21_is_wired_to_the_ablation_run_root_and_the_prior_summaries(pipe):

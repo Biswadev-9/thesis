@@ -33,6 +33,7 @@ from src.analysis import metric_battery as battery
 from src.analysis.base import Analysis
 from src.models.full_pipeline import load_full_pipeline, predict
 from src.utils import RankedLogger
+from src.utils.atomic import atomic_write_json
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
@@ -193,9 +194,10 @@ class InternalTest(Analysis):
                 "forced": self.force,
             }
         )
-        lock_path.write_text(
-            json.dumps({"evaluations": history}, indent=2), encoding="utf-8"
-        )
+        # Atomic: this file is the record of a resource that can be spent once. A kill
+        # during the rewrite would truncate it, and the recovery from a truncated lock is
+        # to discard the history it holds - which is the one thing it exists to keep.
+        atomic_write_json(lock_path, {"evaluations": history})
         log.info(f"Test-set lock written to {lock_path}")
 
     # ------------------------------------------------------------------ metrics
