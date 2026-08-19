@@ -40,7 +40,7 @@ md(r"""
 # Thesis — full study on Kaggle
 
 **Run all** drives the entire pipeline: environment, data, every specification step from
-4 to 18, then a results bundle you can download or attach to the next session.
+4 to 25, then a results bundle you can download or attach to the next session.
 
 ## Before you press Run All
 
@@ -67,17 +67,27 @@ notebook will download them:
 
 ## Pick a profile
 
-| Profile | What it does | Rough cost |
-|---|---|---|
-| `smoke` | 1 epoch, 3 batches per stage. Proves every stage runs and every checkpoint hand-off works. | ~30–45 min |
-| `fast` | One seed, 8 epochs. Real numbers, wrong protocol. | most of one session |
-| `full` | Three seeds, the fixed protocol. **The only reportable profile.** | several sessions |
+| Profile | Stages | What it does | Rough cost |
+|---|---|---|---|
+| `smoke` | 57 | 1 epoch, 3 batches per stage. Proves every stage runs and every checkpoint hand-off works. | ~1 hour |
+| `fast` | 57 | One seed, 8 epochs. Real numbers, wrong protocol. | a session or two |
+| `full` | **127** | Three seeds, the fixed protocol. **The only reportable profile.** | many sessions |
 
-Two things dominate the cost and neither is the GPU. Feature extraction and every
-quantum stage — Step 12, `baseline_fixed_qcnn`, arms 7 and 8 — run their circuits on a
-CPU simulator, so they take the same time on a T4 as on a laptop. Measured here: about
-0.09 s per image through all three branches. Step 12 across three seeds is the single
-largest item in the study.
+`full` is 127 stages, 105 of them training runs. Budget for it in weeks, not hours.
+
+The cost is dominated by work a GPU cannot speed up. Every quantum stage — Step 12,
+`baseline_fixed_qcnn`, arms 7 and 8, the quantum ablation rows, and all of Step 25 —
+runs its circuits on a CPU simulator, so a T4 buys nothing there. Measured: about 0.09 s
+per image through all three branches.
+
+That is worth exploiting. Quantum stages in a **CPU-only session** cost no GPU quota:
+
+```python
+EXTRA_ARGS = ["--only", "step12,step25,features"]   # CPU session
+EXTRA_ARGS = ["--skip", "step12,step25"]            # GPU session
+```
+
+Both write the same `logs/` tree and the completion markers keep them from colliding.
 
 **Run `smoke` first.** It catches every wiring problem for the price of one coffee,
 before you spend GPU quota. Then switch `PROFILE` to `full` and run again — the two keep
@@ -192,6 +202,9 @@ MISSING = [
     "rootutils", "rich",
     "pennylane>=0.40",
     "SimpleITK", "opencv-python-headless", "scikit-image", "h5py",
+    # Step 19 imports shap unguarded, so a missing one aborts that stage eight
+    # hours into a run. Kaggle usually ships it; pip is a no-op when it does.
+    "shap",
 ]
 packages = " ".join(f'"{p}"' for p in MISSING)
 !pip install -q {packages}
