@@ -109,6 +109,11 @@ class AblationStudy(Analysis):
     :param seeds: Protocol seeds to look for. Defaults to Step 15's three.
     :param row_models: Mapping of row id to the Hydra model config used to rebuild that
         row's module from its checkpoint.
+    :param model_defs: Accepted and ignored. ``configs/analysis/step21_ablation.yaml``
+        composes the model configs into ``analysis.model_defs`` purely so ``row_models``
+        can interpolate them; Hydra then hands every top-level key to this constructor,
+        so the scaffolding has to be nameable here or instantiation fails. The values
+        reach the study through ``row_models``, never through this argument.
     :param n_calibration_bins: Bins for the ECE estimate.
     :param accelerator: ``auto``, ``cpu`` or ``gpu``.
     :param strict: Fail if a row's checkpoints are missing, rather than recording the row
@@ -124,6 +129,7 @@ class AblationStudy(Analysis):
         run_root: Optional[str] = None,
         seeds: Sequence[int] = PROTOCOL_SEEDS,
         row_models: Optional[Dict[str, Any]] = None,
+        model_defs: Optional[Dict[str, Any]] = None,
         n_calibration_bins: int = 10,
         accelerator: str = "auto",
         strict: bool = False,

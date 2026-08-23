@@ -2194,6 +2194,12 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
             # The one recipe every condition shares, from Step 6's confirmation. Passed
             # explicitly so the analysis records the same value the conditions trained on.
             f"analysis.recipe={p.confirmed_recipe_context().recipe or 'null'}",
+            # And the confirmation itself, because the line above cannot carry "no
+            # preprocessing": the conventional reference resolves to None, Hydra reads the
+            # resulting `null` back as None, and the analysis is then left with neither an
+            # explicit recipe nor a summary to read one from. Passing both means the
+            # decision is always resolvable, whichever way it went.
+            f"analysis.confirmation_summary={p.summary_path(*STEP06_CONFIRM_SUMMARY).as_posix()}",
             f"analysis.seeds=[{','.join(str(s) for s in p.seeds)}]",
             *p.loader_overrides(),
         ]
@@ -2272,6 +2278,9 @@ def build_stages(pipe: Pipeline) -> List[Stage]:
             f"analysis={QUANTUM_CIRCUIT_NAMESPACE}",
             f"analysis.run_root={run_root.as_posix()}",
             f"analysis.recipe={p.confirmed_recipe_context().recipe or 'null'}",
+            # See the Step 24 builder: `recipe=null` is indistinguishable from "unset"
+            # once Hydra has parsed it, so the confirmation travels alongside it.
+            f"analysis.confirmation_summary={p.summary_path(*STEP06_CONFIRM_SUMMARY).as_posix()}",
             f"analysis.seeds=[{','.join(str(s) for s in p.seeds)}]",
             *p.loader_overrides(),
         ]
