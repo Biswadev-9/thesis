@@ -1,0 +1,41 @@
+# SWIN-T ARM of step13_fusion.yaml.
+#
+#   python src/analyze.py analysis=step13_fusion_swin \
+#       hydra.run.dir=logs/analyze/runs/step13_fusion_swin
+#
+# Sole delta from the baseline config: tag default -> swin, so this reads the Swin
+# feature cache (data/features/swin/) and never the baseline one.
+#
+# Branch widths are read from the cache at runtime, so nothing here hard-codes 768.
+#
+# Step 13: compare fusion strategies and measure branch contribution.
+#
+#   python src/analyze.py analysis=step13_fusion
+#
+# Concatenation is the baseline; attention or gating is adopted only if it beats it on
+# validation by more than improvement_threshold. Then the winner is re-trained with each
+# branch zeroed at input, so the measured drop reflects that branch's information rather
+# than a smaller model.
+
+_target_: src.analysis.fusion_study.FusionStudy
+
+name: step13_fusion
+
+# Feature cache produced by src/extract_features.py.
+tag: swin
+
+strategies: ["concat", "se", "gated"]
+
+epochs: 20
+lr: 1e-3
+proj_dim: 64
+dropout: 0.3
+
+run_branch_ablation: true
+
+# Margin a more complex strategy must beat concatenation by. Raise it to avoid adopting
+# attention or gating on noise.
+improvement_threshold: 0.0
+
+seed: ${seed}
+accelerator: auto

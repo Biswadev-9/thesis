@@ -1,0 +1,28 @@
+# @package _global_
+#
+# Step 10 (Swin-T arm): train the classical feature extraction branch.
+#
+#   python src/train.py -m experiment=step10_classical_swin seed=42,123,7 trainer=gpu
+#
+# Identical to step10_classical.yaml except for the model. Same data, same split, same
+# recipe (null / raw), same normalisation, same augmentation, same fixed protocol - so the
+# only difference between this arm and the EfficientNet-B0 baseline is the backbone.
+#
+# Pin the output directory so this arm cannot overwrite the baseline's runs:
+#
+#   hydra.run.dir=logs/train/runs/step10_classical_swin/seed_42
+
+defaults:
+  - override /data: bt_mri
+  - override /model: branch_classical_swin
+  - override /callbacks: mri
+  - override /trainer: default
+  - override /protocol: fixed
+
+tags: ["step10", "branch", "classical", "swin"]
+
+data:
+  recipe: null
+  normalize: imagenet
+  augment: true
+  use_weighted_sampler: true

@@ -1,0 +1,40 @@
+# Step 10 (Swin-T arm): classical feature extraction branch.
+#
+# Identical to branch_classical.yaml in every respect except the backbone. Swin-T was
+# selected on the Step 9 baseline comparison, where it reached the highest validation
+# macro-F1 of the seven baselines (99.07 +/- 0.10 vs EfficientNet-B0's 98.71 +/- 0.22).
+#
+# The feature width is NOT declared here: TransferBackbone reads it from the backbone's
+# own head via _last_linear_in_features(), so this branch emits 768-d features instead of
+# EfficientNet-B0's 1280-d without any dimension being hard-coded.
+#
+# The EfficientNet-B0 arm lives in branch_classical.yaml and is untouched, so both arms
+# remain runnable and comparable.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.mri_classification_module.MRIClassificationModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.transfer.TransferBackbone
+  arch: swin_t
+  num_classes: 4
+  weights: DEFAULT
+  freeze_backbone: true
+  dropout: 0.3
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+compile: false

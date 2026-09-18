@@ -1,0 +1,43 @@
+# Step 14/15 (Swin-T arm): the final classifier.
+#
+# Structurally IDENTICAL to final_classifier.yaml. The only difference is classical_dim,
+# which follows the backbone: Swin-T emits 768 features where EfficientNet-B0 emitted
+# 1280. Everything downstream is unchanged - each branch is still projected to 64, the
+# fused vector is still 3 x 64 = 192, and the head is still [128, 64] -> 4.
+#
+# Only BranchProjections.classical changes shape: Linear(1280, 64) -> Linear(768, 64).
+#
+# Steps 13 and 14 read the widths from the feature cache at runtime (see
+# src/analysis/fusion_study.py and src/analysis/loss_selection.py), so this static value
+# matters to Step 15 and to the Steps 16-20 pipeline rebuilds.
+
+defaults:
+  - /loss@criterion: weighted_ce
+
+_target_: src.models.feature_fusion_module.FeatureFusionModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-3
+  weight_decay: 1e-4
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: 30
+
+net:
+  _target_: src.models.components.fusion.FusedFeatureClassifier
+  # Swin-T: 768. The only value that differs from final_classifier.yaml.
+  classical_dim: 768
+  spatial_dim: 32
+  quantum_dim: 4
+  proj_dim: 64
+  hidden_dims: [128, 64]
+  num_classes: 4
+  dropout: 0.4
+
+num_classes: 4
+class_names: ["Glioma", "Meningioma", "Pituitary", "No-tumor"]
+compile: false

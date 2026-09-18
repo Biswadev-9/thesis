@@ -45,6 +45,41 @@ from src.utils import RankedLogger
 log = RankedLogger(__name__, rank_zero_only=True)
 
 
+def grad_cam_target_layer(backbone: torch.nn.Module) -> torch.nn.Module:
+    """Pick a layer whose activations are ``(B, C, H, W)``, as :class:`GradCAM` requires.
+
+    ``GradCAM`` weights each channel by its mean gradient - ``gradients.mean(dim=(2, 3))``
+    - and sums over ``dim=1``. That is only correct for channels-first activations.
+
+    EfficientNet's ``features[-1]`` is channels-first, so it is hooked directly. A
+    torchvision Swin Transformer is not: its stages emit ``(B, H, W, C)`` and the model
+    applies ``Permute([0, 3, 1, 2])`` afterwards, so hooking ``features[-1]`` would make
+    Grad-CAM average over width and treat height as the channel axis. That produces a
+    plausible-looking but meaningless heatmap rather than an error, which is worse than a
+    crash. Hooking the ``permute`` module instead yields the same feature map already in
+    channels-first order, so ``GradCAM`` needs no change.
+
+    :param backbone: The classical branch's torchvision backbone.
+    :return: The layer to hook.
+    :raises AttributeError: If no suitable layer can be located.
+    """
+    permute = getattr(backbone, "permute", None)
+    if permute is not None:
+        # Swin: (B, H, W, C) -> (B, C, H, W). Hook the permute so activations arrive
+        # channels-first.
+        return permute
+
+    features = getattr(backbone, "features", None)
+    if features is not None:
+        return features[-1]
+
+    raise AttributeError(
+        f"Cannot locate a Grad-CAM target layer on {type(backbone).__name__}: it exposes "
+        "neither 'permute' (Swin) nor 'features' (EfficientNet). Add the architecture to "
+        "grad_cam_target_layer() rather than hooking a layer with an unverified layout."
+    )
+
+
 class ExplainabilityStudy(Analysis):
     """Grad-CAM, SHAP, MC-dropout and saliency sanity checks for the proposed model.
 
@@ -237,7 +272,7 @@ class ExplainabilityStudy(Analysis):
         if not examples:
             return {"note": "no examples available"}
 
-        target_layer = pipeline.classical_net.backbone.features[-1]
+        target_layer = grad_cam_target_layer(pipeline.classical_net.backbone)
         rows: List[Dict[str, Any]] = []
         panels: List[Tuple[Dict[str, Any], Image.Image, np.ndarray]] = []
 
