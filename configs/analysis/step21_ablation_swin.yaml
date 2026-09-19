@@ -1,0 +1,106 @@
+# SWIN-T ARM of step21_ablation.yaml.
+#
+#   python src/analyze.py analysis=step21_ablation_swin \
+#       analysis.step06_summary=logs/analyze/runs/step06_preprocessing/step06_preprocessing_summary.json \
+#       analysis.step14_summary=logs/analyze/runs/step14_loss_selection_swin/step14_loss_selection_summary.json \
+#       analysis.step16_summary=logs/analyze/runs/step16_internal_swin/seed_42/step16_internal_summary.json \
+#       hydra.run.dir=logs/analyze/runs_swin/step21_ablation
+#
+# Four deltas from the baseline config, all forced by the backbone swap:
+#
+#   model_defs.branch_classical  branch_classical  -> branch_classical_swin   (A0, A1, A2)
+#   model_defs.final_classifier  final_classifier  -> final_classifier_swin   (A6, A7, A8)
+#   run_root                     step21_ablation   -> step21_ablation_swin
+#   feature_tags                 (absent)          -> a6_diffusion_swin       (A6, A7, A8)
+#
+# `name` stays `step21_ablation` on purpose. The summary filename comes from `name` and
+# the directory from hydra.run.dir, so this writes
+# logs/analyze/runs_swin/step21_ablation/step21_ablation_summary.json - the canonical
+# name that src/analysis/rq_mapping.py looks for, inside a Swin-only analyze root. Step 22
+# therefore needs no Swin config of its own: point its analyze_root at runs_swin.
+#
+# WHICH ROWS ARE SWIN AND WHICH ARE SHARED
+#
+# A0, A1, A2 carry an ImageNet backbone (their checkpoints hold net.backbone.*, 41.7 MB)
+# and are retrained here. A3, A4 and A5 do not: A3 is MultiscaleClassifier, A4 is
+# FixedQCNN, A5 is AdaptiveQuantumClassifier, and A5's only image-facing module is
+# MultiscaleBranch(variant="spatial_gate") - a from-scratch ConvStem, not a pretrained
+# backbone. Their checkpoints hold no backbone tensor and weigh 0.1-0.9 MB. The backbone
+# swap cannot change them, so run_root points at symlinks back to the EfficientNet-era
+# runs rather than at retrained copies. This is the same reasoning that lets the Swin arm
+# reuse the Step 12 quantum checkpoint (see configs/extract_features_swin.yaml) and that
+# leaves Steps 24 and 25 untouched.
+#
+# A6 and A7 are retrained even though they hold no backbone: their BranchProjections
+# consume the fused vector, whose classical third is 1280-d from EfficientNet-B0 and 768-d
+# from Swin-T. The baseline checkpoints carry a 327,680-byte Linear(1280, 64); the Swin
+# ones carry Linear(768, 64). Loading one into the other fails at load_state_dict, which
+# is the intended guard rather than a silent wrong number.
+#
+# A8 mirrors A7 and P is read from step16_summary; neither trains and neither builds a
+# datamodule. Pointing step16_summary at step16_internal_swin is what makes row P "the
+# Swin-T model as shipped" rather than the EfficientNet one.
+
+# The row modules are pulled in from configs/model/ rather than restated here, exactly as
+# the baseline config does. Only the two backbone-bearing entries differ.
+defaults:
+  - /model@model_defs.branch_classical: branch_classical_swin
+  - /model@model_defs.branch_multiscale: branch_multiscale
+  - /model@model_defs.fixed_qcnn: baseline_fixed_qcnn
+  - /model@model_defs.adaptive_quantum: branch_adaptive_quantum
+  - /model@model_defs.final_classifier: final_classifier_swin
+  - _self_
+
+_target_: src.analysis.ablation_study.AblationStudy
+
+name: step21_ablation
+
+_recursive_: false
+
+# The three summaries the matrix depends on. Step 6 is backbone-independent and stays on
+# the shared run; Steps 14 and 16 must be the Swin arm's, or row A7's loss and row P's
+# headline would describe a different model from the one being ablated.
+step06_summary: null
+step14_summary: null
+step16_summary: null
+
+# Step 15: "Run at least three seeds for the final model and major baselines."
+seeds: [42, 123, 7]
+
+# Swin-only training tree. A3/A4/A5 live here as symlinks to the EfficientNet-era runs;
+# A0/A1/A2/A6/A7 are retrained into it. Never logs/train/runs/step21_ablation, which must
+# stay exactly as the EfficientNet study left it.
+run_root: logs/train/runs/step21_ablation_swin
+
+# Which feature cache each feature-backed row reads. Without this A6/A7/A8 would fall back
+# to the rows' own `a6_diffusion`, which holds 1280-d EfficientNet features - a wrong
+# number rather than an error. `swin` for P records the cache the shipped Swin model's
+# features came from; P is read from Step 16 and never loads a cache, so this is
+# provenance rather than behaviour.
+feature_tags:
+  A6: a6_diffusion_swin
+  A7: a6_diffusion_swin
+  A8: a6_diffusion_swin
+  P: swin
+
+# Hydra model configs used to rebuild each row's module from its checkpoint. Keyed by row
+# id; rows sharing an architecture share a config.
+row_models:
+  A0: ${analysis.model_defs.branch_classical}
+  A1: ${analysis.model_defs.branch_classical}
+  A2: ${analysis.model_defs.branch_classical}
+  A3: ${analysis.model_defs.branch_multiscale}
+  A4: ${analysis.model_defs.fixed_qcnn}
+  A5: ${analysis.model_defs.adaptive_quantum}
+  A6: ${analysis.model_defs.final_classifier}
+  A7: ${analysis.model_defs.final_classifier}
+  A8: ${analysis.model_defs.final_classifier}
+
+n_calibration_bins: 10
+
+# Record a missing row and carry on, rather than losing an eight-row matrix to one absent
+# checkpoint. The smoke test relies on this: it trains A2 and A6 only and expects the
+# other rows to be reported absent. Set true for the full run.
+strict: false
+
+accelerator: auto

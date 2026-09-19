@@ -114,6 +114,13 @@ class AblationStudy(Analysis):
         can interpolate them; Hydra then hands every top-level key to this constructor,
         so the scaffolding has to be nameable here or instantiation fails. The values
         reach the study through ``row_models``, never through this argument.
+    :param feature_tags: Optional ``{row_id: tag}`` overriding which feature cache a
+        feature-backed row reads. Empty by default, so the rows' own tags are used and
+        behaviour is unchanged. A row whose ``feature_tag`` is ``None`` is an image row
+        and is never converted into a feature row by this map. Needed because a second
+        backbone arm caches its fused features under a different tag: the Swin-T arm
+        reads ``a6_diffusion_swin`` where the EfficientNet-B0 arm reads ``a6_diffusion``,
+        and the two caches must not be confused for one another.
     :param n_calibration_bins: Bins for the ECE estimate.
     :param accelerator: ``auto``, ``cpu`` or ``gpu``.
     :param strict: Fail if a row's checkpoints are missing, rather than recording the row
@@ -130,6 +137,7 @@ class AblationStudy(Analysis):
         seeds: Sequence[int] = PROTOCOL_SEEDS,
         row_models: Optional[Dict[str, Any]] = None,
         model_defs: Optional[Dict[str, Any]] = None,
+        feature_tags: Optional[Dict[str, str]] = None,
         n_calibration_bins: int = 10,
         accelerator: str = "auto",
         strict: bool = False,
@@ -141,6 +149,7 @@ class AblationStudy(Analysis):
         self.run_root = run_root
         self.seeds = tuple(int(s) for s in seeds)
         self.row_models = dict(row_models or {})
+        self.feature_tags = {str(k): str(v) for k, v in dict(feature_tags or {}).items()}
         self.n_calibration_bins = n_calibration_bins
         self.accelerator = accelerator
         self.strict = strict
@@ -212,7 +221,7 @@ class AblationStudy(Analysis):
             "recipe": resolve_recipe(row, context),
             "loss": resolve_loss(row, context),
             "model": row.model,
-            "feature_tag": row.feature_tag,
+            "feature_tag": self.feature_tag(row),
             "trains": row.trains,
             "rqs": list(row.rqs),
             "note": row.note,
@@ -360,6 +369,20 @@ class AblationStudy(Analysis):
         """
         return Path(self.run_root or "logs/train/runs/step21_ablation") / row.row_id / f"seed_{seed}"
 
+    def feature_tag(self, row: AblationRow) -> Optional[str]:
+        """Which feature cache this row is evaluated on.
+
+        An image row stays an image row: ``feature_tags`` can redirect a feature-backed
+        row to a different cache, but it can never give a tag to a row that has none, or
+        the row would silently stop being the thing it is defined to be.
+
+        :param row: The row.
+        :return: The tag to read, or ``None`` for an image row.
+        """
+        if row.feature_tag is None:
+            return None
+        return self.feature_tags.get(row.row_id, row.feature_tag)
+
     def build_datamodule(self, row: AblationRow, context: AblationContext) -> Any:
         """Instantiate the datamodule a row is evaluated on.
 
@@ -370,10 +393,11 @@ class AblationStudy(Analysis):
         :param context: Resolved Step 6 / Step 14 selections.
         :return: An un-setup datamodule.
         """
-        if row.feature_tag is not None:
+        tag = self.feature_tag(row)
+        if tag is not None:
             from src.data.bt_mri_feature_datamodule import BTMRIFeatureDataModule
 
-            return BTMRIFeatureDataModule(tag=row.feature_tag)
+            return BTMRIFeatureDataModule(tag=tag)
 
         from src.data.bt_mri_datamodule import BTMRIDataModule
 
@@ -476,7 +500,7 @@ class AblationStudy(Analysis):
                         "recipe": record["recipe"],
                         "loss": record["loss"],
                         "model": row.model,
-                        "feature_tag": row.feature_tag,
+                        "feature_tag": self.feature_tag(row),
                         "checkpoint": metrics.get("checkpoint"),
                         "provenance": metrics.get("provenance"),
                         "n_samples": metrics.get("n_samples"),
